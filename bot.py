@@ -866,7 +866,8 @@ async def process_movie_request(message: types.Message, state: FSMContext):
     # Store search results temporarily for the user
     user_requests[message.from_user.id] = {
         "results": movie_results[:5], # Only show top 5 results
-        "query": movie_title
+        "query": movie_title,
+        "message_ids": [] # Store message IDs to delete later
     }
     
     await message.reply("Encontré varias coincidencias. Por favor, elige la película correcta de la lista:")
@@ -885,16 +886,30 @@ async def process_movie_request(message: types.Message, state: FSMContext):
         
         try:
             if poster_url:
-                await bot.send_photo(chat_id=message.chat.id, photo=poster_url, caption=text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+                sent_message = await bot.send_photo(chat_id=message.chat.id, photo=poster_url, caption=text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
             else:
-                await bot.send_message(chat_id=message.chat.id, text=text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+                sent_message = await bot.send_message(chat_id=message.chat.id, text=text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+            
+            user_requests[message.from_user.id]["message_ids"].append(sent_message.message_id)
+
         except Exception as e:
             logging.error(f"Error al enviar la opción de película: {e}")
             
     await state.set_state(MovieRequestStates.waiting_for_confirmation)
 
-@dp.callback_query(F.data.startswith("confirm_request_"), MovieRequestStates.waiting_for_confirmation)
+@dp.callback_query(F.data.startswith("confirm_request_"))
 async def confirm_movie_request(callback_query: types.CallbackQuery, state: FSMContext):
+    user_id = callback_query.from_user.id
+    
+    # Check if a user request is pending for this user and clear the messages
+    if user_id in user_requests:
+        for message_id in user_requests[user_id]["message_ids"]:
+            try:
+                await bot.delete_message(chat_id=callback_query.message.chat.id, message_id=message_id)
+            except Exception as e:
+                logging.warning(f"No se pudo eliminar el mensaje con ID {message_id}: {e}")
+        del user_requests[user_id]
+        
     await bot.answer_callback_query(callback_query.id)
     
     tmdb_id = int(callback_query.data.split("_")[-1])
