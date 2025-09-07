@@ -472,24 +472,39 @@ async def add_movie_again_callback(callback_query: types.CallbackQuery, state: F
 
 @dp.callback_query(F.data.startswith("publish_now_manual_"))
 async def publish_now_manual_callback(callback_query: types.CallbackQuery):
-    movie_id = int(callback_query.data.split("_")[2])
-    movie_data = get_movie_details(movie_id)
-    if not movie_data:
-        await bot.answer_callback_query(callback_query.id, "No se pudo obtener la información de la película. No se puede publicar.", show_alert=True)
+    try:
+        movie_id = int(callback_query.data.split("_")[3])
+    except (ValueError, IndexError):
+        await bot.answer_callback_query(callback_query.id, "Error: no se pudo obtener el ID de la película. Inténtalo de nuevo.", show_alert=True)
         return
-    await delete_old_post(movie_id)
+    
     movie_info = get_movie_by_tmdb_id(movie_id)
     if not movie_info:
         await bot.answer_callback_query(callback_query.id, "Error: película no encontrada en la base de datos.", show_alert=True)
         return
+    
+    movie_data = get_movie_details(movie_id)
+    if not movie_data:
+        movie_data = {
+            "title": movie_info.get("names")[0],
+            "overview": "Sinopsis no disponible",
+            "vote_average": 0,
+            "release_date": "N/A",
+            "poster_path": None,
+            "id": movie_id
+        }
+    
+    await delete_old_post(movie_id)
     text, poster_url, post_keyboard = create_movie_message(movie_data, movie_info.get("link"))
+    
     success, _ = await send_movie_post(TELEGRAM_CHANNEL_ID, movie_data, movie_info.get("link"), post_keyboard)
+    
     if success:
         await bot.answer_callback_query(callback_query.id, "✅ Película publicada con éxito.", show_alert=True)
         await bot.delete_message(chat_id=callback_query.message.chat.id, message_id=callback_query.message.message_id)
     else:
         await bot.answer_callback_query(callback_query.id, "Ocurrió un error al publicar la película.", show_alert=True)
-
+    
 @dp.callback_query(F.data.startswith("publish_now_from_trakt_"))
 async def publish_now_from_trakt_callback(callback_query: types.CallbackQuery, state: FSMContext):
     if str(callback_query.from_user.id) != ADMIN_ID:
@@ -910,32 +925,6 @@ async def publish_and_notify_callback(callback_query: types.CallbackQuery):
         except Exception as e:
             logging.error(f"No se pudo notificar al usuario {user_request_id}: {e}")
         await bot.answer_callback_query(callback_query.id, "✅ Película publicada y usuario notificado.", show_alert=True)
-    else:
-        await bot.answer_callback_query(callback_query.id, "Ocurrió un error al publicar la película.", show_alert=True)
-
-@dp.callback_query(F.data.startswith("publish_now_manual_"))
-async def publish_now_manual_callback(callback_query: types.CallbackQuery):
-    movie_id = int(callback_query.data.split("_")[2])
-    movie_info = get_movie_by_tmdb_id(movie_id)
-    if not movie_info:
-        await bot.answer_callback_query(callback_query.id, "Error: película no encontrada en la base de datos.", show_alert=True)
-        return
-    movie_data = get_movie_details(movie_id)
-    if not movie_data:
-        movie_data = {
-            "title": movie_info.get("names")[0],
-            "overview": "Sinopsis no disponible",
-            "vote_average": 0,
-            "release_date": "N/A",
-            "poster_path": None,
-            "id": movie_id
-        }
-    await delete_old_post(movie_id)
-    text, poster_url, post_keyboard = create_movie_message(movie_data, movie_info.get("link"))
-    success, _ = await send_movie_post(TELEGRAM_CHANNEL_ID, movie_data, movie_info.get("link"), post_keyboard)
-    if success:
-        await bot.answer_callback_query(callback_query.id, "✅ Película publicada con éxito.", show_alert=True)
-        await bot.delete_message(chat_id=callback_query.message.chat.id, message_id=callback_query.message.message_id)
     else:
         await bot.answer_callback_query(callback_query.id, "Ocurrió un error al publicar la película.", show_alert=True)
 
