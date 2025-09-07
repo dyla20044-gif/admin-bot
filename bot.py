@@ -45,7 +45,6 @@ recent_posts = deque(maxlen=20)
 user_requests = {}
 admin_data = {}
 memes = [
-    # URLs corregidas para que apunten directamente a las imágenes
     {"photo_url": "https://i.imgflip.com/64s72q.jpg", "caption": "Cuando te dicen que hay una película nueva... y es la que no querías."},
     {"photo_url": "https://i.imgflip.com/71j22e.jpg", "caption": "Yo esperando la película que pedí en el canal..."},
     {"photo_url": "https://i.imgflip.com/83p14j.jpg", "caption": "Mi reacción cuando el bot me dice que la película ya está en el catálogo."},
@@ -716,26 +715,17 @@ async def search_by_genre_callback(callback_query: types.CallbackQuery):
     await bot.send_message(callback_query.message.chat.id, "Elige un género:", reply_markup=keyboard)
 
 @dp.callback_query(F.data.startswith("genre_"))
-async def show_movies_by_genre(callback_query: types.CallbackQuery, page=1):
+async def show_movies_by_genre(callback_query: types.CallbackQuery):
     await bot.answer_callback_query(callback_query.id)
-    genre_id_str = callback_query.data.split('_')[1]
-    genre_id = int(genre_id_str)
-    
+    parts = callback_query.data.split('_')
+    genre_id = int(parts[1])
+    page = int(parts[2]) if len(parts) > 2 else 1
+
     movies, total_pages = get_movies_by_genre(genre_id, page=page)
 
     if not movies:
         await bot.send_message(callback_query.message.chat.id, "No se encontraron más películas para este género.")
         return
-
-    keyboard_buttons = []
-    if page > 1:
-        keyboard_buttons.append(types.InlineKeyboardButton(text="⬅️ Anterior", callback_data=f"genre_page_{genre_id}_{page-1}"))
-    if page < total_pages:
-        keyboard_buttons.append(types.InlineKeyboardButton(text="Siguiente ➡️", callback_data=f"genre_page_{genre_id}_{page+1}"))
-        
-    keyboard_pag = types.InlineKeyboardMarkup(inline_keyboard=[keyboard_buttons])
-
-    await bot.send_message(callback_query.message.chat.id, f"**Aquí tienes algunas películas de {next((k for k, v in GENRES.items() if v == genre_id), 'este género')}:**", reply_markup=keyboard_pag, parse_mode=ParseMode.MARKDOWN)
 
     for movie in movies[:5]:
         tmdb_id = movie.get("id")
@@ -763,14 +753,13 @@ async def show_movies_by_genre(callback_query: types.CallbackQuery, page=1):
                 await bot.send_message(chat_id=callback_query.message.chat.id, text=text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
         except Exception as e:
             logging.error(f"Error al enviar la publicación en el catálogo: {e}")
+    
+    if page < total_pages:
+        keyboard_pag = types.InlineKeyboardMarkup(inline_keyboard=[
+            [types.InlineKeyboardButton(text="➡️ Ver más películas", callback_data=f"genre_{genre_id}_{page+1}")]
+        ])
+        await bot.send_message(callback_query.message.chat.id, "...", reply_markup=keyboard_pag)
 
-@dp.callback_query(F.data.startswith("genre_page_"))
-async def navigate_genre_page(callback_query: types.CallbackQuery):
-    parts = callback_query.data.split('_')
-    genre_id = int(parts[2])
-    page = int(parts[3])
-    await bot.delete_message(chat_id=callback_query.message.chat.id, message_id=callback_query.message.message_id)
-    await show_movies_by_genre(callback_query, page=page)
 
 @dp.callback_query(F.data == "search_by_actor")
 async def search_by_actor_callback(callback_query: types.CallbackQuery, state: FSMContext):
