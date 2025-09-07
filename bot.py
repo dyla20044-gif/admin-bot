@@ -29,7 +29,7 @@ ADMIN_ID = os.getenv("ADMIN_ID")
 # ------------------------
 
 # Channel ID
-TELEGRAM_CHANNEL_ID =  -1001945286271
+TELEGRAM_CHANNEL_ID = -1002139779491
 BASE_TMDB_URL = "https://api.themoviedb.org/3"
 POSTER_BASE_URL = "https://image.tmdb.org/t/p/w500"
 MOVIES_DB_FILE = "movies.json"
@@ -156,15 +156,34 @@ def get_popular_movies():
         logging.error(f"Error al obtener películas populares de TMDB: {e}")
         return []
 
-def get_movies_by_genre(genre_id):
+def get_movies_by_genre(genre_id, page=1):
     url = f"{BASE_TMDB_URL}/discover/movie"
-    params = {"api_key": TMDB_API_KEY, "language": "es-ES", "with_genres": genre_id, "sort_by": "popularity.desc"}
+    params = {"api_key": TMDB_API_KEY, "language": "es-ES", "with_genres": genre_id, "sort_by": "popularity.desc", "page": page}
     try:
         response = requests.get(url, params=params)
         response.raise_for_status()
-        return response.json().get("results", [])[:5]
+        data = response.json()
+        return data.get("results", []), data.get("total_pages", 1)
     except requests.exceptions.RequestException as e:
         logging.error(f"Error al buscar películas por género: {e}")
+        return [], 1
+
+def get_upcoming_movies():
+    url = f"{BASE_TMDB_URL}/discover/movie"
+    current_year = datetime.datetime.now().year
+    params = {
+        "api_key": TMDB_API_KEY,
+        "language": "es-ES",
+        "sort_by": "popularity.desc",
+        "primary_release_date.gte": f"{current_year}-01-01",
+        "vote_count.gte": 50,
+    }
+    try:
+        response = requests.get(url, params=params)
+        response.raise_for_status()
+        return response.json().get("results", [])
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Error al obtener próximos estrenos de TMDB: {e}")
         return []
 
 def get_movies_by_actor(actor_name):
@@ -611,64 +630,15 @@ async def final_schedule_callback(callback_query: types.CallbackQuery):
 
 @dp.message(F.text == "🎞️ Estrenos")
 async def show_estrenos_by_text(message: types.Message):
-    if not movies_db:
-        await message.reply("Aún no hay películas en el catálogo. ¡Pronto habrá!")
+    await message.reply("Buscando los últimos estrenos...")
+    upcoming_movies = get_upcoming_movies()
+    if not upcoming_movies:
+        await message.reply("No se encontraron estrenos recientes en este momento.")
         return
-    sorted_movies = sorted(movies_db.values(), key=lambda x: (x.get('last_message_id') is None, x.get('last_message_id', 0)), reverse=True)
-    recent_movies = sorted_movies[:10]
-    text = "**🎞️ ¡Estrenos!**\n\nAquí tienes las últimas películas publicadas en el canal. Si quieres ver una, solo escribe su nombre completo.\n\n"
-    if not recent_movies or all(m.get('last_message_id') is None for m in recent_movies):
-      text = "**🎞️ ¡Estrenos!**\n\nNo hay estrenos recientes publicados en el canal, pero aquí tienes una lista de películas de nuestra base de datos que podrían interesarte.\n\n"
-      recent_movies = random.sample(list(movies_db.values()), min(len(movies_db), 10))
-    for movie in recent_movies:
-        title = movie.get("names")[0] if "names" in movie and movie.get("names") else "Título desconocido"
-        text += f"- {title}\n"
-    await message.reply(text, parse_mode=ParseMode.MARKDOWN)
-
-@dp.message(F.text == "🔍 Buscar película")
-async def show_search_options_by_text(message: types.Message):
-    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-        [types.InlineKeyboardButton(text="Por Género", callback_data="search_by_genre")],
-        [types.InlineKeyboardButton(text="Por Actor", callback_data="search_by_actor")],
-        [types.InlineKeyboardButton(text="Por Nombre", callback_data="search_by_name")]
-    ])
-    await message.reply(
-        "¿Cómo quieres buscar la película?",
-        reply_markup=keyboard
-    )
-
-@dp.message(F.text == "✨ Recomiéndame")
-async def show_recomendar_by_text(message: types.Message):
-    await message.reply("Obteniendo recomendaciones...")
-    popular_movies = get_popular_movies()
-    text = "**✨ ¡Películas recomendadas!**\n\nAquí tienes algunas películas populares que podrían gustarte. \n\n"
-    if not popular_movies:
-        await message.reply("No se pudieron obtener recomendaciones en este momento.")
-        return
-    for movie in popular_movies[:5]:
-        text += f"- {movie.get('title')}\n"
-    await message.reply(text, parse_mode=ParseMode.MARKDOWN)
-
-@dp.callback_query(F.data == "search_by_genre")
-async def search_by_genre_callback(callback_query: types.CallbackQuery):
-    await bot.answer_callback_query(callback_query.id)
-    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-        [types.InlineKeyboardButton(text=genre, callback_data=f"genre_{id}") for genre, id in list(GENRES.items())[i:i+3]] for i in range(0, len(GENRES), 3)
-    ])
-    await bot.send_message(callback_query.message.chat.id, "Elige un género:", reply_markup=keyboard)
-
-@dp.callback_query(F.data.startswith("genre_"))
-async def show_movies_by_genre(callback_query: types.CallbackQuery):
-    await bot.answer_callback_query(callback_query.id)
-    genre_id = int(callback_query.data.split("_")[1])
-    movies = get_movies_by_genre(genre_id)
-    if not movies:
-        await bot.send_message(callback_query.message.chat.id, "No se encontraron películas para este género.")
-        return
-
-    await bot.send_message(callback_query.message.chat.id, "**Aquí tienes algunas películas populares para este género:**", parse_mode=ParseMode.MARKDOWN)
-
-    for movie in movies:
+    
+    await message.reply("**🎞️ ¡Últimos estrenos!**\n\nAquí tienes las películas más recientes que se han estrenado.\n", parse_mode=ParseMode.MARKDOWN)
+    
+    for movie in upcoming_movies[:5]:
         tmdb_id = movie.get("id")
         movie_data = get_movie_details(tmdb_id)
         if not movie_data:
@@ -689,22 +659,118 @@ async def show_movies_by_genre(callback_query: types.CallbackQuery):
         
         try:
             if poster_url:
-                await bot.send_photo(
-                    chat_id=callback_query.message.chat.id,
-                    photo=poster_url,
-                    caption=text,
-                    reply_markup=keyboard,
-                    parse_mode=ParseMode.HTML
-                )
+                await bot.send_photo(message.chat.id, photo=poster_url, caption=text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
             else:
-                await bot.send_message(
-                    chat_id=callback_query.message.chat.id,
-                    text=text,
-                    reply_markup=keyboard,
-                    parse_mode=ParseMode.HTML
-                )
+                await bot.send_message(message.chat.id, text=text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+        except Exception as e:
+            logging.error(f"Error al enviar estreno: {e}")
+
+@dp.message(F.text == "🔍 Buscar película")
+async def show_search_options_by_text(message: types.Message):
+    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+        [types.InlineKeyboardButton(text="Por Género", callback_data="search_by_genre")],
+        [types.InlineKeyboardButton(text="Por Actor", callback_data="search_by_actor")],
+        [types.InlineKeyboardButton(text="Por Nombre", callback_data="search_by_name")],
+        [types.InlineKeyboardButton(text="✨ Solicitar una película", callback_data="request_movie_from_user")]
+    ])
+    await message.reply(
+        "¿Cómo quieres buscar la película?",
+        reply_markup=keyboard
+    )
+
+@dp.message(F.text == "✨ Recomiéndame")
+async def show_recomendar_by_text(message: types.Message):
+    await message.reply("Obteniendo recomendaciones...")
+    popular_movies = get_popular_movies()
+    if not popular_movies:
+        await message.reply("No se pudieron obtener recomendaciones en este momento.")
+        return
+    
+    await message.reply(f"**✨ ¡Películas recomendadas!**\n\nAquí tienes algunas películas populares que podrían gustarte.\n", parse_mode=ParseMode.MARKDOWN)
+
+    for movie in popular_movies[:5]:
+        tmdb_id = movie.get("id")
+        movie_data = get_movie_details(tmdb_id)
+        if not movie_data:
+            continue
+
+        keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+            [types.InlineKeyboardButton(text="🎬 Pedir esta película", callback_data=f"request_movie_by_id_{tmdb_id}")]
+        ])
+        text, poster_url, _ = create_movie_message(movie_data)
+        
+        try:
+            if poster_url:
+                await bot.send_photo(message.chat.id, photo=poster_url, caption=text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+            else:
+                await bot.send_message(message.chat.id, text=text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+        except Exception as e:
+            logging.error(f"Error al enviar recomendación: {e}")
+
+@dp.callback_query(F.data == "search_by_genre")
+async def search_by_genre_callback(callback_query: types.CallbackQuery):
+    await bot.answer_callback_query(callback_query.id)
+    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+        [types.InlineKeyboardButton(text=genre, callback_data=f"genre_{id}") for genre, id in list(GENRES.items())[i:i+3]] for i in range(0, len(GENRES), 3)
+    ])
+    await bot.send_message(callback_query.message.chat.id, "Elige un género:", reply_markup=keyboard)
+
+@dp.callback_query(F.data.startswith("genre_"))
+async def show_movies_by_genre(callback_query: types.CallbackQuery, page=1):
+    await bot.answer_callback_query(callback_query.id)
+    genre_id_str = callback_query.data.split('_')[1]
+    genre_id = int(genre_id_str)
+    
+    movies, total_pages = get_movies_by_genre(genre_id, page=page)
+
+    if not movies:
+        await bot.send_message(callback_query.message.chat.id, "No se encontraron más películas para este género.")
+        return
+
+    keyboard_buttons = []
+    if page > 1:
+        keyboard_buttons.append(types.InlineKeyboardButton(text="⬅️ Anterior", callback_data=f"genre_page_{genre_id}_{page-1}"))
+    if page < total_pages:
+        keyboard_buttons.append(types.InlineKeyboardButton(text="Siguiente ➡️", callback_data=f"genre_page_{genre_id}_{page+1}"))
+        
+    keyboard_pag = types.InlineKeyboardMarkup(inline_keyboard=[keyboard_buttons])
+
+    await bot.send_message(callback_query.message.chat.id, f"**Aquí tienes algunas películas de {next((k for k, v in GENRES.items() if v == genre_id), 'este género')}:**", reply_markup=keyboard_pag, parse_mode=ParseMode.MARKDOWN)
+
+    for movie in movies[:5]:
+        tmdb_id = movie.get("id")
+        movie_data = get_movie_details(tmdb_id)
+        if not movie_data:
+            continue
+        
+        movie_in_db = get_movie_by_tmdb_id(tmdb_id)
+        
+        if movie_in_db:
+            keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+                [types.InlineKeyboardButton(text="🎬 Publicar ahora", callback_data=f"publish_now_manual_{tmdb_id}")]
+            ])
+        else:
+            keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+                [types.InlineKeyboardButton(text="🎬 Pedir esta película", callback_data=f"request_movie_by_id_{tmdb_id}")]
+            ])
+
+        text, poster_url, _ = create_movie_message(movie_data)
+        
+        try:
+            if poster_url:
+                await bot.send_photo(chat_id=callback_query.message.chat.id, photo=poster_url, caption=text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+            else:
+                await bot.send_message(chat_id=callback_query.message.chat.id, text=text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
         except Exception as e:
             logging.error(f"Error al enviar la publicación en el catálogo: {e}")
+
+@dp.callback_query(F.data.startswith("genre_page_"))
+async def navigate_genre_page(callback_query: types.CallbackQuery):
+    parts = callback_query.data.split('_')
+    genre_id = int(parts[2])
+    page = int(parts[3])
+    await bot.delete_message(chat_id=callback_query.message.chat.id, message_id=callback_query.message.message_id)
+    await show_movies_by_genre(callback_query, page=page)
 
 @dp.callback_query(F.data == "search_by_actor")
 async def search_by_actor_callback(callback_query: types.CallbackQuery, state: FSMContext):
@@ -734,6 +800,15 @@ async def ask_for_movie_by_name(callback_query: types.CallbackQuery, state: FSMC
     await bot.send_message(
         chat_id=callback_query.message.chat.id,
         text="Por favor, escribe el nombre correcto de tu película."
+    )
+    await state.set_state(MovieRequestStates.waiting_for_movie_name)
+
+@dp.callback_query(F.data == "request_movie_from_user")
+async def request_movie_from_user(callback_query: types.CallbackQuery, state: FSMContext):
+    await bot.answer_callback_query(callback_query.id)
+    await bot.send_message(
+        chat_id=callback_query.message.chat.id,
+        text="Por favor, escribe el nombre de la película que te gustaría solicitar."
     )
     await state.set_state(MovieRequestStates.waiting_for_movie_name)
 
@@ -978,7 +1053,6 @@ async def start_voting_command(message: types.Message, state: FSMContext):
             await bot.send_photo(message.chat.id, photo=f"{POSTER_BASE_URL}{movie_data.get('poster_path')}", caption=f"**{movie_data.get('title')}**")
         else:
             await bot.send_message(message.chat.id, text=f"**{movie_info.get('names')[0]}**")
-        # CORRECCIÓN: Usar callback_data en lugar de url para los botones de votación
         keyboard_buttons.append([types.InlineKeyboardButton(text=f"Votar por '{movie_info.get('names')[0]}'", callback_data=f"vote_{movie_info.get('id')}")])
     
     keyboard = types.InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
@@ -1153,4 +1227,3 @@ async def main():
         
 if __name__ == "__main__":
     asyncio.run(main())
-
