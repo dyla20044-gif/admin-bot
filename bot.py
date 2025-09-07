@@ -10,6 +10,8 @@ import time
 import random
 from flask import Flask
 from threading import Thread
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.enums import ParseMode
@@ -26,10 +28,14 @@ TMDB_API_KEY = os.getenv("TMDB_API_KEY")
 TRAKT_CLIENT_ID = os.getenv("TRAKT_CLIENT_ID")
 TRAKT_CLIENT_SECRET = os.getenv("TRAKT_CLIENT_SECRET")
 ADMIN_ID = os.getenv("ADMIN_ID")
+GOOGLE_SHEETS_URL = os.getenv("GOOGLE_SHEETS_URL")
+GOOGLE_CLIENT_EMAIL = os.getenv("GOOGLE_CLIENT_EMAIL")
+GOOGLE_PRIVATE_KEY = os.getenv("GOOGLE_PRIVATE_KEY").replace("\\n", "\n")
+GOOGLE_SCOPES = os.getenv("GOOGLE_SCOPES").split()
 # ------------------------
 
 # Channel ID
-TELEGRAM_CHANNEL_ID = -1001945286271
+TELEGRAM_CHANNEL_ID = -1002139779491
 BASE_TMDB_URL = "https://api.themoviedb.org/3"
 POSTER_BASE_URL = "https://image.tmdb.org/t/p/w500"
 MOVIES_DB_FILE = "movies.json"
@@ -71,6 +77,10 @@ movies_db = {}
 AUTO_POST_COUNT = 4
 MOVIES_PER_PAGE = 5
 
+# Google Sheets setup
+gc = None
+worksheet = None
+
 # New states for the state machine
 class MovieUploadStates(StatesGroup):
     waiting_for_movie_info = State()
@@ -84,6 +94,7 @@ class MovieRequestStates(StatesGroup):
 class AdminStates(StatesGroup):
     waiting_for_auto_post_count = State()
     waiting_for_manual_movie_info = State()
+    waiting_for_edit_movie_info = State()
 
 class VotingStates(StatesGroup):
     waiting_for_votes = State()
@@ -92,31 +103,63 @@ class VotingStates(StatesGroup):
 def load_movies_db():
     global movies_db
     try:
-        with open(MOVIES_DB_FILE, "r", encoding="utf-8") as f:
-            movies_db = json.load(f)
-            logging.info(f"Se cargaron {len(movies_db)} películas de la base de datos.")
-    except (FileNotFoundError, json.JSONDecodeError):
-        logging.warning("No se encontró el archivo de la base de datos o está vacío. Se creará uno nuevo.")
+        data = worksheet.get_all_records()
+        movies_db = {d.get("title"): d for d in data}
+        logging.info(f"Se cargaron {len(movies_db)} películas de Google Sheets.")
+    except Exception as e:
+        logging.error(f"Error al cargar la base de datos de Google Sheets: {e}")
         movies_db = {}
 
-def save_movies_db():
-    with open(MOVIES_DB_FILE, "w", encoding="utf-8") as f:
-        json.dump(movies_db, f, ensure_ascii=False, indent=4)
-        logging.info("Base de datos de películas guardada con éxito.")
+def save_movies_db(movie_data):
+    try:
+        title = movie_data.get("title")
+        if title in movies_db:
+            # Update existing row
+            row_index = worksheet.find(title).row
+            row_data = [
+                movie_data.get("title", ""),
+                movie_data.get("names", ""),
+                movie_data.get("id", ""),
+                movie_data.get("link", ""),
+                movie_data.get("last_message_id", "")
+            ]
+            worksheet.update(f'A{row_index}:E{row_index}', [row_data])
+            logging.info(f"Película '{title}' actualizada en Google Sheets.")
+        else:
+            # Append new row
+            row_data = [
+                movie_data.get("title", ""),
+                ", ".join(movie_data.get("names", [])),
+                movie_data.get("id", ""),
+                movie_data.get("link", ""),
+                movie_data.get("last_message_id", "")
+            ]
+            worksheet.append_row(row_data)
+            logging.info(f"Película '{title}' agregada a Google Sheets.")
+        
+        movies_db[title] = movie_data
+    except Exception as e:
+        logging.error(f"Error al guardar la película en Google Sheets: {e}")
 
 def find_movie_in_db(title_to_find):
+    load_movies_db() # Reload to get latest data
     for main_title, movie_data in movies_db.items():
-        if "names" in movie_data and title_to_find.lower() in [name.lower() for name in movie_data["names"]]:
+        if "names" in movie_data and title_to_find.lower() in [name.lower() for name in movie_data["names"].split(", ")]:
             return main_title, movie_data
         elif main_title.lower() == title_to_find.lower():
             return main_title, movie_data
     return None, None
 
 def get_movie_by_tmdb_id(tmdb_id):
+    load_movies_db()
     for movie_data in movies_db.values():
         if movie_data.get("id") == tmdb_id:
             return movie_data
     return None
+
+def get_all_movies():
+    load_movies_db()
+    return list(movies_db.values())
 
 # --- Auxiliary functions for the TMDB API
 def get_movie_results_by_title(title):
@@ -267,12 +310,12 @@ async def delete_old_post(movie_id_tmdb):
 
     if found_key:
         old_message_id = movies_db[found_key].get("last_message_id")
-        if old_message_id:
+        if old_message_id and str(old_message_id) != 'None':
             try:
-                await bot.delete_message(chat_id=TELEGRAM_CHANNEL_ID, message_id=old_message_id)
+                await bot.delete_message(chat_id=TELEGRAM_CHANNEL_ID, message_id=int(old_message_id))
                 logging.info(f"Mensaje anterior con ID {old_message_id} de '{found_key}' eliminado.")
                 movies_db[found_key]["last_message_id"] = None
-                save_movies_db()
+                save_movies_db(movies_db[found_key])
             except Exception as e:
                 logging.error(f"Error al intentar borrar el mensaje {old_message_id}: {e}")
 
@@ -298,7 +341,7 @@ async def send_movie_post(chat_id, movie_data, movie_link, post_keyboard):
             movie_key = next((k for k, v in movies_db.items() if movie_data.get("id") == v.get("id")), None)
             if movie_key:
                 movies_db[movie_key]["last_message_id"] = message.message_id
-                save_movies_db()
+                save_movies_db(movies_db[movie_key])
 
         return True, message.message_id
     except Exception as e:
@@ -358,23 +401,24 @@ async def view_catalog_by_text(message: types.Message):
     if str(message.from_user.id) != ADMIN_ID:
         await message.reply("No tienes permiso para esta acción.")
         return
-    if not movies_db:
+    all_movies = get_all_movies()
+    if not all_movies:
         await message.reply("Aún no hay películas en la base de datos.")
         return
     await send_catalog_page(message.chat.id, 0)
 
 async def send_catalog_page(chat_id, page):
-    movie_items = list(movies_db.items())
+    movie_items = get_all_movies()
     start = page * MOVIES_PER_PAGE
     end = start + MOVIES_PER_PAGE
     page_movies = movie_items[start:end]
     total_pages = (len(movie_items) + MOVIES_PER_PAGE - 1) // MOVIES_PER_PAGE
     text = f"**Catálogo de Películas** (Página {page + 1}/{total_pages})\n\n"
     keyboard_buttons = []
-    for _, data in page_movies:
-        title = data.get("names")[0] if "names" in data and data.get("names") else "Título desconocido"
-        movie_id = data.get("id")
-        keyboard_buttons.append([types.InlineKeyboardButton(text=f"Publicar '{title}'", callback_data=f"publish_from_catalog_{movie_id}")])
+    for data in page_movies:
+        title = data.get("names").split(",")[0] if "names" in data else "Título desconocido"
+        tmdb_id = data.get("id")
+        keyboard_buttons.append([types.InlineKeyboardButton(text=f"Publicar '{title}'", callback_data=f"publish_from_catalog_{tmdb_id}")])
     pagination_buttons = []
     if page > 0:
         pagination_buttons.append(types.InlineKeyboardButton(text="⬅️ Anterior", callback_data=f"catalog_page_{page-1}"))
@@ -382,8 +426,82 @@ async def send_catalog_page(chat_id, page):
         pagination_buttons.append(types.InlineKeyboardButton(text="Siguiente ➡️", callback_data=f"catalog_page_{page+1}"))
     if pagination_buttons:
         keyboard_buttons.append(pagination_buttons)
+    keyboard_buttons.append([types.InlineKeyboardButton(text="✍️ Editar película", callback_data="edit_movie_start")])
     keyboard = types.InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
     await bot.send_message(chat_id, text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
+
+@dp.callback_query(F.data == "edit_movie_start")
+async def edit_movie_start_callback(callback_query: types.CallbackQuery, state: FSMContext):
+    await bot.answer_callback_query(callback_query.id)
+    await bot.send_message(callback_query.message.chat.id, "Por favor, envía el título o ID de la película que quieres editar.")
+    await state.set_state(AdminStates.waiting_for_edit_movie_info)
+
+@dp.message(AdminStates.waiting_for_edit_movie_info)
+async def find_movie_to_edit(message: types.Message, state: FSMContext):
+    search_query = message.text.strip()
+    movie_to_edit = None
+    try:
+        search_id = int(search_query)
+        movie_to_edit = get_movie_by_tmdb_id(search_id)
+    except ValueError:
+        _, movie_to_edit = find_movie_in_db(search_query)
+
+    if not movie_to_edit:
+        await message.reply("No se encontró ninguna película con ese título o ID. Inténtalo de nuevo.")
+        return
+    
+    await state.update_data(movie_to_edit=movie_to_edit)
+    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+        [types.InlineKeyboardButton(text="✏️ Editar Título/Nombres", callback_data="edit_movie_names")],
+        [types.InlineKeyboardButton(text="🔗 Editar Enlace", callback_data="edit_movie_link")],
+        [types.InlineKeyboardButton(text="❌ Cancelar", callback_data="cancel_edit_movie")]
+    ])
+    await message.reply(f"Seleccionaste la película: **{movie_to_edit['names'].split(',')[0]}**. ¿Qué quieres editar?", reply_markup=keyboard)
+    await state.set_state(AdminStates.waiting_for_edit_movie_info)
+
+@dp.callback_query(F.data.startswith("edit_movie_"))
+async def edit_movie_callback(callback_query: types.CallbackQuery, state: FSMContext):
+    user_data = await state.get_data()
+    movie_to_edit = user_data.get("movie_to_edit")
+    if not movie_to_edit:
+        await bot.answer_callback_query(callback_query.id, "Error: Película no seleccionada. Intenta de nuevo.", show_alert=True)
+        return
+    
+    if callback_query.data == "edit_movie_names":
+        await bot.send_message(callback_query.message.chat.id, "Por favor, envía el nuevo título principal y los nombres de la película separados por comas. Ejemplo: `Volver al futuro, Back to the Future`")
+        await state.update_data(edit_type="names")
+    elif callback_query.data == "edit_movie_link":
+        await bot.send_message(callback_query.message.chat.id, "Por favor, envía el nuevo enlace de la película.")
+        await state.update_data(edit_type="link")
+    elif callback_query.data == "cancel_edit_movie":
+        await state.clear()
+        await bot.send_message(callback_query.message.chat.id, "Edición cancelada.")
+    
+    await bot.answer_callback_query(callback_query.id)
+
+@dp.message(AdminStates.waiting_for_edit_movie_info)
+async def process_edit_movie(message: types.Message, state: FSMContext):
+    user_data = await state.get_data()
+    movie_to_edit = user_data.get("movie_to_edit")
+    edit_type = user_data.get("edit_type")
+    
+    if not movie_to_edit or not edit_type:
+        await message.reply("Ocurrió un error. Por favor, intenta de nuevo desde el inicio.")
+        await state.clear()
+        return
+    
+    new_value = message.text.strip()
+    if edit_type == "names":
+        new_names = [name.strip() for name in new_value.split(',')]
+        movie_to_edit["names"] = ", ".join(new_names)
+        movie_to_edit["title"] = new_names[0]
+    elif edit_type == "link":
+        movie_to_edit["link"] = new_value
+        
+    save_movies_db(movie_to_edit)
+    await message.reply("✅ Película actualizada correctamente.")
+    await state.clear()
+
 
 @dp.callback_query(F.data.startswith("catalog_page_"))
 async def navigate_catalog(callback_query: types.CallbackQuery):
@@ -470,13 +588,14 @@ async def add_movie_info(message: types.Message, state: FSMContext):
         )
         return
         
-    movies_db[main_title.lower()] = {
-        "names": names,
+    movie_data = {
+        "title": main_title,
+        "names": ", ".join(names),
         "id": found_movie_id,
         "link": movie_link,
-        "last_message_id": None
+        "last_message_id": ""
     }
-    save_movies_db()
+    save_movies_db(movie_data)
     await state.clear()
     keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
         [types.InlineKeyboardButton(text="➕ Agregar otra película", callback_data="add_movie_again")],
@@ -510,7 +629,7 @@ async def publish_now_manual_callback(callback_query: types.CallbackQuery):
     movie_data = get_movie_details(movie_id)
     if not movie_data:
         movie_data = {
-            "title": movie_info.get("names")[0],
+            "title": movie_info.get("names").split(",")[0],
             "overview": "Sinopsis no disponible",
             "vote_average": 0,
             "release_date": "N/A",
@@ -572,15 +691,17 @@ async def process_requested_movie_link(message: types.Message, state: FSMContext
         return
     main_title = movie_data.get("title")
     names = [main_title]
-    if movie_data.get("original_title") != main_title:
+    if movie_data.get("original_title") and movie_data.get("original_title") != main_title:
         names.append(movie_data.get("original_title"))
-    movies_db[main_title.lower()] = {
-        "names": names,
+    
+    new_movie = {
+        "title": main_title,
+        "names": ", ".join(names),
         "id": tmdb_id,
         "link": movie_link,
-        "last_message_id": None
+        "last_message_id": ""
     }
-    save_movies_db()
+    save_movies_db(new_movie)
     await delete_old_post(tmdb_id)
     text, poster_url, post_keyboard = create_movie_message(movie_data, movie_link)
     success, _ = await send_movie_post(TELEGRAM_CHANNEL_ID, movie_data, movie_link, post_keyboard)
@@ -925,13 +1046,8 @@ async def process_movie_request(message: types.Message, state: FSMContext):
 async def confirm_movie_request(callback_query: types.CallbackQuery, state: FSMContext):
     user_id = callback_query.from_user.id
     
-    # Check if a user request is pending for this user and clear the messages
+    # Clear old messages for the user's current request
     if user_id in user_requests:
-        for message_id in user_requests[user_id]["message_ids"]:
-            try:
-                await bot.delete_message(chat_id=callback_query.message.chat.id, message_id=message_id)
-            except Exception as e:
-                logging.warning(f"No se pudo eliminar el mensaje con ID {message_id}: {e}")
         del user_requests[user_id]
         
     await bot.answer_callback_query(callback_query.id)
@@ -1036,7 +1152,7 @@ async def start_voting_command(message: types.Message, state: FSMContext):
     if str(message.from_user.id) != ADMIN_ID:
         await message.reply("No tienes permiso para esta acción.")
         return
-    unposted_movies = [m for m in movies_db.values() if m.get("last_message_id") is None]
+    unposted_movies = [m for m in get_all_movies() if str(m.get("last_message_id")) == 'None' or m.get("last_message_id") == '']
     if len(unposted_movies) < 3:
         await message.reply("No hay suficientes películas nuevas para iniciar una votación. Agrega al menos 3 películas.")
         return
@@ -1058,8 +1174,8 @@ async def start_voting_command(message: types.Message, state: FSMContext):
         if movie_data and movie_data.get("poster_path"):
             await bot.send_photo(message.chat.id, photo=f"{POSTER_BASE_URL}{movie_data.get('poster_path')}", caption=f"**{movie_data.get('title')}**")
         else:
-            await bot.send_message(message.chat.id, text=f"**{movie_info.get('names')[0]}**")
-        keyboard_buttons.append([types.InlineKeyboardButton(text=f"Votar por '{movie_info.get('names')[0]}'", callback_data=f"vote_{movie_info.get('id')}")])
+            await bot.send_message(message.chat.id, text=f"**{movie_info.get('names').split(',')[0]}**")
+        keyboard_buttons.append([types.InlineKeyboardButton(text=f"Votar por '{movie_info.get('names').split(',')[0]}'", callback_data=f"vote_{movie_info.get('id')}")])
     
     keyboard = types.InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
     await bot.send_message(message.chat.id, text=text + "¡Elige tu favorita para que sea la próxima en publicarse!", reply_markup=keyboard)
@@ -1075,7 +1191,7 @@ async def start_voting_command(message: types.Message, state: FSMContext):
     winning_movie_info = get_movie_by_tmdb_id(winning_movie_id)
     
     if winning_movie_info and final_data["votes"][winning_movie_id] > 0:
-        await message.reply(f"🏆 ¡La película ganadora es **{winning_movie_info.get('names')[0]}** con {final_data['votes'][winning_movie_id]} votos! Publicando ahora...")
+        await message.reply(f"🏆 ¡La película ganadora es **{winning_movie_info.get('names').split(',')[0]}** con {final_data['votes'][winning_movie_id]} votos! Publicando ahora...")
         movie_data = get_movie_details(winning_movie_id)
         if movie_data:
             await delete_old_post(winning_movie_id)
@@ -1107,7 +1223,7 @@ async def auto_post_scheduler():
         try:
             total_posts_per_day = AUTO_POST_COUNT
             interval_seconds = 24 * 60 * 60 / total_posts_per_day
-            unposted_movies = [v for v in movies_db.values() if v.get("last_message_id") is None]
+            unposted_movies = [v for v in get_all_movies() if str(v.get("last_message_id")) == 'None' or v.get("last_message_id") == '']
             if unposted_movies:
                 movie_info = random.choice(unposted_movies)
                 movie_id = movie_info.get("id")
@@ -1133,7 +1249,7 @@ async def check_scheduled_posts():
         try:
             while not scheduled_posts.empty():
                 movie_info, delay = scheduled_posts.get_nowait()
-                logging.info(f"Programando publicación para '{movie_info.get('names')[0]}' en {delay} minutos.")
+                logging.info(f"Programando publicación para '{movie_info.get('names').split(',')[0]}' en {delay} minutos.")
                 async def publish_later(movie_info, delay):
                     await asyncio.sleep(delay * 60)
                     try:
@@ -1218,6 +1334,29 @@ async def start_webhook_server():
 
 # --- MAIN EXECUTION ---
 async def main():
+    global gc, worksheet
+    
+    # Initialize Google Sheets connection
+    try:
+        creds = ServiceAccountCredentials.from_json_keyfile_dict({
+            "type": "service_account",
+            "project_id": "api-project-1082159846205",
+            "private_key_id": "YOUR_PRIVATE_KEY_ID", # This will be added by Render automatically from the private key
+            "private_key": GOOGLE_PRIVATE_KEY,
+            "client_email": GOOGLE_CLIENT_EMAIL,
+            "client_id": "1082159846205", # This is a dummy client id and will be replaced by Render
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://accounts.google.com/o/oauth2/token",
+            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+            "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/YOUR_CLIENT_EMAIL" # This will be replaced by Render
+        }, GOOGLE_SCOPES)
+        gc = gspread.authorize(creds)
+        worksheet = gc.open_by_url(GOOGLE_SHEETS_URL).sheet1
+        logging.info("Conexión con Google Sheets exitosa.")
+    except Exception as e:
+        logging.error(f"Error al conectar con Google Sheets. Asegúrate de que las variables de entorno están bien configuradas. Error: {e}")
+        return
+
     load_movies_db()
     
     # Inicia las tareas automáticas
