@@ -18,7 +18,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
-# --- CÓDIGO DEL SERVIDOR WEB ---
+# --- WEB SERVER CODE ---
 app = Flask('')
 
 @app.route('/')
@@ -26,14 +26,15 @@ def home():
     return "El bot está en línea y funcionando."
 
 def run():
-    app.run(host='0.0.0.0', port=8080)
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
 
 def keep_alive():
     t = Thread(target=run)
     t.start()
-# --- FIN DEL CÓDIGO DEL SERVIDOR WEB ---
+# --- END OF WEB SERVER CODE ---
 
-# --- TUS CREDENCIALES (AHORA DESDE VARIABLES DE ENTORNO) ---
+# --- YOUR CREDENTIALS (NOW FROM ENVIRONMENT VARIABLES) ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TMDB_API_KEY = os.getenv("TMDB_API_KEY")
 TRAKT_CLIENT_ID = os.getenv("TRAKT_CLIENT_ID")
@@ -41,20 +42,20 @@ TRAKT_CLIENT_SECRET = os.getenv("TRAKT_CLIENT_SECRET")
 ADMIN_ID = os.getenv("ADMIN_ID")
 # ------------------------
 
-# ID del canal de prueba
+# Channel ID
 TELEGRAM_CHANNEL_ID = -1002139779491
 BASE_TMDB_URL = "https://api.themoviedb.org/3"
 POSTER_BASE_URL = "https://image.tmdb.org/t/p/w500"
 MOVIES_DB_FILE = "movies.json"
 
-# Constantes para Trakt.tv
+# Trakt.tv constants
 TRAKT_BASE_URL = "https://api.trakt.tv"
 
-# Almacenamiento de posts programados y posts recientes
+# Storage for scheduled posts and recent posts
 scheduled_posts = asyncio.Queue()
 recent_posts = deque(maxlen=20)
 
-# Almacenamiento temporal para solicitudes de usuarios y datos de admins
+# Temporary storage for user requests and admin data
 user_requests = {}
 admin_data = {}
 memes = [
@@ -65,17 +66,17 @@ memes = [
     {"photo_url": "https://i.imgflip.com/776k1w.jpg", "caption": "Yo después de ver 3 películas seguidas en un día."}
 ]
 
-# Configuración del logging
+# Logging configuration
 logging.basicConfig(level=logging.INFO)
 
-# 2. Inicialización del bot, dispatcher y la "base de datos"
+# Bot, dispatcher, and database initialization
 bot = Bot(token=TELEGRAM_BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 movies_db = {}
 AUTO_POST_COUNT = 4
 MOVIES_PER_PAGE = 5
 
-# Nuevos estados para la máquina de estados
+# New states for the state machine
 class MovieUploadStates(StatesGroup):
     waiting_for_movie_info = State()
     waiting_for_requested_movie_link = State()
@@ -91,7 +92,7 @@ class AdminStates(StatesGroup):
 class VotingStates(StatesGroup):
     waiting_for_votes = State()
 
-# --- Funciones auxiliares para la base de datos de películas
+# --- Auxiliary functions for the movie database
 def load_movies_db():
     global movies_db
     try:
@@ -121,7 +122,7 @@ def get_movie_by_tmdb_id(tmdb_id):
             return movie_data
     return None
 
-# --- Funciones auxiliares para la API de TMDB
+# --- Auxiliary functions for the TMDB API
 def get_movie_id_by_title(title, year=None):
     url = f"{BASE_TMDB_URL}/search/movie"
     params = {"api_key": TMDB_API_KEY, "query": title, "language": "es-ES"}
@@ -214,7 +215,7 @@ def trakt_api_search_movie(title):
         logging.error(f"Error al buscar película en Trakt.tv: {e}")
         return None
 
-# --- Creación del mensaje de la película
+# --- Movie message creation
 def create_movie_message(movie_data, movie_link=None):
     title = movie_data.get("title", "Título no disponible")
     overview = movie_data.get("overview", "Sinopsis no disponible")
@@ -233,13 +234,11 @@ def create_movie_message(movie_data, movie_link=None):
     )
 
     if movie_link:
-        # Se crea un botón llamativo para "Ver ahora"
         post_keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
             [types.InlineKeyboardButton(text="🎬 Ver ahora", url=movie_link)],
             [types.InlineKeyboardButton(text="📽️ Pedir otra película", url="https://t.me/sdmin_dy_bot?start=request")]
         ])
     else:
-        # Botón para pedir película cuando no hay enlace
         post_keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
             [types.InlineKeyboardButton(text="🎬 ¿Quieres pedir una película? Pídela aquí 👇", url="https://t.me/sdmin_dy_bot?start=request")]
         ])
@@ -248,7 +247,7 @@ def create_movie_message(movie_data, movie_link=None):
 
     return text, poster_url, post_keyboard
 
-# --- Funciones de gestión de mensajes en el canal
+# --- Functions for managing messages on the channel
 async def delete_old_post(movie_id_tmdb):
     found_key = None
     for key, data in movies_db.items():
@@ -296,7 +295,7 @@ async def send_movie_post(chat_id, movie_data, movie_link, post_keyboard):
         logging.error(f"Error al enviar la publicación: {e}")
         return False, None
 
-# --- Manejadores de comandos y botones
+# --- Command and button handlers
 @dp.message(Command("start"))
 async def start_command(message: types.Message):
     user_id = message.from_user.id
@@ -313,7 +312,6 @@ async def start_command(message: types.Message):
             reply_markup=keyboard,
         )
     else:
-        # Teclado fijo para usuarios
         user_keyboard = types.ReplyKeyboardMarkup(
             keyboard=[
                 [types.KeyboardButton(text="🔍 Buscar película"), types.KeyboardButton(text="✨ Recomiéndame")],
@@ -327,7 +325,6 @@ async def start_command(message: types.Message):
             parse_mode=ParseMode.MARKDOWN
         )
 
-# Manejador para eliminar mensajes de spam (usa el dominio como filtro)
 @dp.message(F.text.contains("ordershunter.ru"))
 async def delete_spam_message(message: types.Message):
     try:
@@ -720,7 +717,6 @@ async def add_requested_movie_callback(callback_query: types.CallbackQuery, stat
     )
     await state.set_state(MovieUploadStates.waiting_for_requested_movie_link)
 
-# Nuevo manejador para la opción de "Agregar manualmente"
 @dp.callback_query(F.data.startswith("add_manually_"))
 async def add_manually_callback(callback_query: types.CallbackQuery, state: FSMContext):
     if str(callback_query.from_user.id) != ADMIN_ID:
@@ -820,7 +816,6 @@ async def publish_and_notify_callback(callback_query: types.CallbackQuery):
         "poster_path": movie_info.get("poster_path", None) # No se guarda en la DB, solo la URL
     }
     
-    # Reutilizamos la función de publicación
     text, _, post_keyboard = create_movie_message(movie_data_from_db, movie_info.get("link"))
     success, _ = await send_movie_post(TELEGRAM_CHANNEL_ID, movie_data_from_db, movie_info.get("link"), post_keyboard)
 
@@ -833,7 +828,6 @@ async def publish_and_notify_callback(callback_query: types.CallbackQuery):
     else:
         await bot.answer_callback_query(callback_query.id, "Ocurrió un error al publicar la película.", show_alert=True)
 
-# Reutilizamos la función del catálogo, solo para los manejadores de callback
 @dp.callback_query(F.data.startswith("publish_now_manual_"))
 async def publish_now_manual_callback(callback_query: types.CallbackQuery):
     movie_id = int(callback_query.data.split("_")[2])
@@ -881,7 +875,6 @@ async def request_movie_by_id(callback_query: types.CallbackQuery):
     )
     await bot.answer_callback_query(callback_query.id, f"Tu solicitud ha sido enviada al administrador.", show_alert=True)
 
-# Votaciones
 @dp.message(F.text == "🗳️ Iniciar votación")
 async def start_voting_command(message: types.Message, state: FSMContext):
     if str(message.from_user.id) != ADMIN_ID:
@@ -915,7 +908,7 @@ async def start_voting_command(message: types.Message, state: FSMContext):
     keyboard = types.InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
     await bot.send_message(message.chat.id, text=text + "¡Elige tu favorita para que sea la próxima en publicarse!", reply_markup=keyboard)
 
-    await asyncio.sleep(600)  # Votación dura 10 minutos
+    await asyncio.sleep(600)
     
     final_data = await state.get_data()
     if not final_data or not final_data.get("votes"):
@@ -951,7 +944,6 @@ async def process_vote(callback_query: types.CallbackQuery, state: FSMContext):
     await state.update_data(user_data)
     await bot.answer_callback_query(callback_query.id, "¡Voto registrado!")
 
-# Recomendaciones
 @dp.message(F.text == "✨ Recomiéndame")
 async def show_recomendar_by_text(message: types.Message):
     await message.reply("Obteniendo recomendaciones...")
@@ -964,7 +956,7 @@ async def show_recomendar_by_text(message: types.Message):
         text += f"- {movie.get('title')}\n"
     await message.reply(text, parse_mode=ParseMode.MARKDOWN)
 
-# --- Tareas automáticas y principales
+# --- Automated tasks
 async def auto_post_scheduler():
     while True:
         try:
@@ -1038,7 +1030,7 @@ async def channel_content_scheduler():
                         logging.info("Noticia de cine publicada con éxito.")
                     except Exception as e:
                         logging.error(f"Error al publicar una noticia: {e}")
-            await asyncio.sleep(4 * 3600)  # Publicar cada 4 horas
+            await asyncio.sleep(4 * 3600)
         except Exception as e:
             logging.error(f"Error en el programador de contenido del canal: {e}")
             await asyncio.sleep(60)
@@ -1046,7 +1038,6 @@ async def channel_content_scheduler():
 async def main():
     load_movies_db()
     
-    # Inicia el servidor web en un hilo separado
     keep_alive()
 
     async with bot.session:
