@@ -17,24 +17,10 @@ from aiogram.filters import Command
 from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import Update
+from aiohttp import web
 
-# --- WEB SERVER CODE ---
-app = Flask('')
-
-@app.route('/')
-def home():
-    return "El bot está en línea y funcionando."
-
-def run():
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host='0.0.0.0', port=port)
-
-def keep_alive():
-    t = Thread(target=run)
-    t.start()
-# --- END OF WEB SERVER CODE ---
-
-# --- YOUR CREDENTIALS (NOW FROM ENVIRONMENT VARIABLES) ---
+# --- VARIABLES DE ENTORNO ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TMDB_API_KEY = os.getenv("TMDB_API_KEY")
 TRAKT_CLIENT_ID = os.getenv("TRAKT_CLIENT_ID")
@@ -1035,30 +1021,49 @@ async def channel_content_scheduler():
             logging.error(f"Error en el programador de contenido del canal: {e}")
             await asyncio.sleep(60)
 
+# --- WEBHOOK SETUP ---
+async def on_startup(app):
+    WEBHOOK_URL = os.environ.get('RENDER_EXTERNAL_URL') + '/webhook'
+    await bot.set_webhook(WEBHOOK_URL)
+    logging.info("Webhook establecido con éxito.")
+
+async def handle_telegram_webhook(request):
+    try:
+        data = await request.json()
+        update = Update.model_validate(data)
+        await dp.feed_update(bot, update)
+        return web.Response()
+    except Exception as e:
+        logging.error(f"Error al procesar el webhook de Telegram: {e}")
+        return web.Response(text="Error", status=500)
+
+async def start_webhook_server():
+    app = web.Application()
+    app.router.add_post('/webhook', handle_telegram_webhook)
+    app.on_startup.append(on_startup)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', int(os.environ.get('PORT', 8080)))
+    await site.start()
+
+# --- MAIN EXECUTION ---
 async def main():
     load_movies_db()
     
-    keep_alive()
+    # Inicia las tareas automáticas
+    auto_post_task = asyncio.create_task(auto_post_scheduler())
+    scheduled_posts_task = asyncio.create_task(check_scheduled_posts())
+    channel_content_task = asyncio.create_task(channel_content_scheduler())
+    
+    # Inicia el servidor de webhook
+    webhook_task = asyncio.create_task(start_webhook_server())
 
-    async with bot.session:
-        auto_post_task = asyncio.create_task(auto_post_scheduler())
-        scheduled_posts_task = asyncio.create_task(check_scheduled_posts())
-        channel_content_task = asyncio.create_task(channel_content_scheduler())
-        try:
-            await dp.start_polling(bot)
-        finally:
-            auto_post_task.cancel()
-            scheduled_posts_task.cancel()
-            channel_content_task.cancel()
-            try:
-                await auto_post_task
-                await scheduled_posts_task
-                await channel_content_task
-            except asyncio.CancelledError:
-                logging.info("Las tareas automáticas han sido canceladas.")
-
-if __name__ == "__main__":
     try:
-        asyncio.run(main())
+        await asyncio.gather(auto_post_task, scheduled_posts_task, channel_content_task, webhook_task)
+    except asyncio.CancelledError:
+        logging.info("Las tareas automáticas han sido canceladas.")
     except Exception as e:
         logging.error(f"Error general en la ejecución del bot: {e}")
+        
+if __name__ == "__main__":
+    asyncio.run(main())
