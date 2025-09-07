@@ -29,7 +29,7 @@ ADMIN_ID = os.getenv("ADMIN_ID")
 # ------------------------
 
 # Channel ID
-TELEGRAM_CHANNEL_ID = -1002139779491
+TELEGRAM_CHANNEL_ID =  -1001945286271
 BASE_TMDB_URL = "https://api.themoviedb.org/3"
 POSTER_BASE_URL = "https://image.tmdb.org/t/p/w500"
 MOVIES_DB_FILE = "movies.json"
@@ -1216,3 +1216,4 @@ async def main():
         
 if __name__ == "__main__":
     asyncio.run(main())
+
