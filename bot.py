@@ -104,7 +104,9 @@ def load_movies_db():
         logging.error(f"Error al cargar la base de datos de GitHub Gist: {e}")
         movies_db = {}
 
+# --- FUNCIÓN CORREGIDA ---
 def save_movies_db(movie_data):
+    global movies_db
     try:
         load_movies_db()
         movies_list = list(movies_db.values())
@@ -126,6 +128,7 @@ def save_movies_db(movie_data):
         logging.info(f"Base de datos de películas actualizada en GitHub Gist.")
     except Exception as e:
         logging.error(f"Error al guardar la película en GitHub Gist: {e}")
+# --- FIN DE LA FUNCIÓN CORREGIDA ---
 
 def find_movie_in_db(title_to_find):
     load_movies_db()
