@@ -30,7 +30,9 @@ TRAKT_CLIENT_SECRET = os.getenv("TRAKT_CLIENT_SECRET")
 ADMIN_ID = os.getenv("ADMIN_ID")
 GOOGLE_SHEETS_URL = os.getenv("GOOGLE_SHEETS_URL")
 GOOGLE_CLIENT_EMAIL = os.getenv("GOOGLE_CLIENT_EMAIL")
+# --- CORRECCIÓN AQUÍ ---
 GOOGLE_PRIVATE_KEY = os.getenv("GOOGLE_PRIVATE_KEY").replace("\\n", "\n")
+# ------------------------
 GOOGLE_SCOPES = os.getenv("GOOGLE_SCOPES").split()
 # ------------------------
 
@@ -1341,14 +1343,14 @@ async def main():
         creds = ServiceAccountCredentials.from_json_keyfile_dict({
             "type": "service_account",
             "project_id": "calcium-vector-471418-v5",
-            "private_key_id": "3669e2fa47228a330c83aba91f441642992987a3", # REEMPLAZA ESTE VALOR CON EL DE TU JSON
+            "private_key_id": "3669e2fa47228a330c83aba91f441642992987a3",
             "private_key": GOOGLE_PRIVATE_KEY,
             "client_email": GOOGLE_CLIENT_EMAIL,
-            "client_id": "115696355713152214007", # REEMPLAZA ESTE VALOR CON EL DE TU JSON
+            "client_id": "115696355713152214007",
             "auth_uri": "https://accounts.google.com/o/oauth2/auth",
             "token_uri": "https://oauth2.googleapis.com/token",
             "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-            "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/mi-nuevo-proyecto%40calcium-vector-471418-v5.iam.gserviceaccount.com" # REEMPLAZA ESTE VALOR CON EL DE TU JSON
+            "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/mi-nuevo-proyecto%40calcium-vector-471418-v5.iam.gserviceaccount.com"
         }, GOOGLE_SCOPES)
         gc = gspread.authorize(creds)
         worksheet = gc.open_by_url(GOOGLE_SHEETS_URL).sheet1
