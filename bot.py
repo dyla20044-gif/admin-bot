@@ -45,6 +45,7 @@ recent_posts = deque(maxlen=20)
 user_requests = {}
 admin_data = {}
 memes = [
+    # URLs corregidas para que apunten directamente a las imágenes
     {"photo_url": "https://i.imgflip.com/64s72q.jpg", "caption": "Cuando te dicen que hay una película nueva... y es la que no querías."},
     {"photo_url": "https://i.imgflip.com/71j22e.jpg", "caption": "Yo esperando la película que pedí en el canal..."},
     {"photo_url": "https://i.imgflip.com/83p14j.jpg", "caption": "Mi reacción cuando el bot me dice que la película ya está en el catálogo."},
@@ -977,6 +978,7 @@ async def start_voting_command(message: types.Message, state: FSMContext):
             await bot.send_photo(message.chat.id, photo=f"{POSTER_BASE_URL}{movie_data.get('poster_path')}", caption=f"**{movie_data.get('title')}**")
         else:
             await bot.send_message(message.chat.id, text=f"**{movie_info.get('names')[0]}**")
+        # CORRECCIÓN: Usar callback_data en lugar de url para los botones de votación
         keyboard_buttons.append([types.InlineKeyboardButton(text=f"Votar por '{movie_info.get('names')[0]}'", callback_data=f"vote_{movie_info.get('id')}")])
     
     keyboard = types.InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
