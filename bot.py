@@ -29,7 +29,7 @@ ADMIN_ID = os.getenv("ADMIN_ID")
 # ------------------------
 
 # Channel ID
-TELEGRAM_CHANNEL_ID = -1002139779491
+TELEGRAM_CHANNEL_ID = -1001945286271
 BASE_TMDB_URL = "https://api.themoviedb.org/3"
 POSTER_BASE_URL = "https://image.tmdb.org/t/p/w500"
 MOVIES_DB_FILE = "movies.json"
@@ -786,17 +786,41 @@ async def search_by_actor_callback(callback_query: types.CallbackQuery, state: F
 async def show_movies_by_actor(message: types.Message, state: FSMContext):
     actor_name = message.text.strip()
     await state.clear()
+    
+    await message.reply("Buscando las películas más populares de ese actor...")
+    
     movies = get_movies_by_actor(actor_name)
     if not movies:
-        await message.reply(f"No se encontraron películas para el actor '{actor_name}'.")
+        await message.reply(f"No se encontraron películas para el actor '{actor_name}'. Por favor, revisa la ortografía y vuelve a intentarlo.")
         return
-    text = f"**Aquí tienes algunas de las películas más populares de {actor_name}:**\n\n"
-    keyboard_buttons = []
+        
     for movie in movies:
-        text += f"- {movie.get('title')} ({movie.get('release_date', 'N/A')[:4]})\n"
-        keyboard_buttons.append([types.InlineKeyboardButton(text=f"Pedir '{movie.get('title')}'", callback_data=f"request_movie_by_id_{movie.get('id')}")])
-    keyboard = types.InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
-    await message.reply(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
+        tmdb_id = movie.get("id")
+        movie_data = get_movie_details(tmdb_id)
+        if not movie_data:
+            continue
+            
+        text, poster_url, _ = create_movie_message(movie_data)
+        
+        # Check if the movie already exists in the local database
+        movie_in_db = get_movie_by_tmdb_id(tmdb_id)
+        
+        if movie_in_db:
+            keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+                [types.InlineKeyboardButton(text="🎬 Publicar ahora", callback_data=f"publish_now_manual_{tmdb_id}")]
+            ])
+        else:
+            keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+                [types.InlineKeyboardButton(text="🎬 Pedir esta película", callback_data=f"request_movie_by_id_{tmdb_id}")]
+            ])
+        
+        try:
+            if poster_url:
+                await bot.send_photo(chat_id=message.chat.id, photo=poster_url, caption=text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+            else:
+                await bot.send_message(chat_id=message.chat.id, text=text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+        except Exception as e:
+            logging.error(f"Error al enviar la publicación en el catálogo del actor: {e}")
 
 @dp.callback_query(F.data == "search_by_name")
 async def ask_for_movie_by_name(callback_query: types.CallbackQuery, state: FSMContext):
