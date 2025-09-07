@@ -36,6 +36,8 @@ GIST_ID = os.getenv("GIST_ID")
 TELEGRAM_CHANNEL_ID = -1002139779491
 BASE_TMDB_URL = "https://api.themoviedb.org/3"
 POSTER_BASE_URL = "https://image.tmdb.org/t/p/w500"
+# Se agregó la URL de Trakt.tv, ya que no estaba definida.
+TRAKT_BASE_URL = "https://api.trakt.tv"
 
 # Storage for scheduled posts and recent posts
 scheduled_posts = asyncio.Queue()
@@ -104,7 +106,6 @@ def load_movies_db():
         logging.error(f"Error al cargar la base de datos de GitHub Gist: {e}")
         movies_db = {}
 
-# --- FUNCIÓN CORREGIDA ---
 def save_movies_db(movie_data):
     global movies_db
     try:
@@ -128,7 +129,6 @@ def save_movies_db(movie_data):
         logging.info(f"Base de datos de películas actualizada en GitHub Gist.")
     except Exception as e:
         logging.error(f"Error al guardar la película en GitHub Gist: {e}")
-# --- FIN DE LA FUNCIÓN CORREGIDA ---
 
 def find_movie_in_db(title_to_find):
     load_movies_db()
@@ -701,6 +701,7 @@ async def process_requested_movie_link(message: types.Message, state: FSMContext
         await message.reply("✅ Película agregada a la base de datos, pero ocurrió un error al publicarla en el canal.")
     if original_request_id:
         try:
+            # Corrección: El message_id a borrar es el del mensaje original de la solicitud, que está en `original_request_id`, no el ID del mensaje actual.
             await bot.delete_message(chat_id=message.chat.id, message_id=original_request_id)
         except Exception as e:
             logging.error(f"No se pudo eliminar el mensaje original de la solicitud: {e}")
@@ -883,7 +884,13 @@ async def navigate_genre_page(callback_query: types.CallbackQuery):
     parts = callback_query.data.split('_')
     genre_id = int(parts[2])
     page = int(parts[3])
-    await bot.delete_message(chat_id=callback_query.message.chat.id, message_id=callback_query.message.message_id)
+    # Se debe editar el mensaje, no borrarlo, para una mejor experiencia de usuario.
+    await bot.edit_message_text(
+        chat_id=callback_query.message.chat.id,
+        message_id=callback_query.message.message_id,
+        text="Cargando...",
+    )
+    # Se llama a la función con el objeto `callback_query` y el número de página.
     await show_movies_by_genre(callback_query, page=page)
 
 @dp.callback_query(F.data == "search_by_actor")
@@ -963,17 +970,16 @@ async def process_movie_request(message: types.Message, state: FSMContext):
             await message.reply("Lo siento, hubo un problema al obtener la información de la película. Por favor, intenta de nuevo más tarde.")
             return
 
-        await delete_old_post(movie_id)
+        # No es necesario llamar a delete_old_post() en este caso, ya que es una respuesta a una búsqueda de usuario, no una publicación en el canal.
+        # await delete_old_post(movie_id)
         text, poster_url, post_keyboard = create_movie_message(movie_data, movie_link)
-        success, _ = await send_movie_post(TELEGRAM_CHANNEL_ID, movie_data, movie_link, post_keyboard)
         
-        if success:
-            await message.reply(
-                f"✅ ¡La película ya estaba en el catálogo! Fue publicada en el canal principal. <a href='https://t.me/+C8xLlSwkqSc3ZGU5'>Haz clic aquí para verla.</a>",
-                parse_mode=ParseMode.HTML
-            )
-        else:
-            await message.reply("Ocurrió un error al intentar publicar la película. Por favor, contacta al administrador.")
+        # En lugar de publicar en el canal, se responde directamente al usuario.
+        await message.reply(
+            f"✅ ¡La película ya estaba en el catálogo! Aquí tienes el enlace para verla.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=post_keyboard
+        )
         
         await state.clear()
         return
@@ -1030,7 +1036,13 @@ async def process_movie_request(message: types.Message, state: FSMContext):
 async def confirm_movie_request(callback_query: types.CallbackQuery, state: FSMContext):
     user_id = callback_query.from_user.id
     
+    # Se eliminan los mensajes de opciones enviadas previamente
     if user_id in user_requests:
+        for msg_id in user_requests[user_id]["message_ids"]:
+            try:
+                await bot.delete_message(chat_id=callback_query.message.chat.id, message_id=msg_id)
+            except Exception:
+                pass # Ignorar errores si el mensaje ya fue borrado
         del user_requests[user_id]
         
     await bot.answer_callback_query(callback_query.id)
@@ -1048,6 +1060,7 @@ async def confirm_movie_request(callback_query: types.CallbackQuery, state: FSMC
     
     if movie_info_db:
         movie_link = movie_info_db.get("link")
+        # No es necesario borrar el mensaje anterior si se reenvía al canal, ya que delete_old_post se encargará.
         await delete_old_post(tmdb_id)
         text, poster_url, post_keyboard = create_movie_message(movie_data, movie_link)
         success, _ = await send_movie_post(TELEGRAM_CHANNEL_ID, movie_data, movie_link, post_keyboard)
@@ -1095,6 +1108,7 @@ async def request_movie_by_id(callback_query: types.CallbackQuery, state: FSMCon
     
     if movie_info_db:
         movie_link = movie_info_db.get("link")
+        # No es necesario borrar el mensaje anterior si se reenvía al canal, ya que delete_old_post se encargará.
         await delete_old_post(tmdb_id)
         text, poster_url, post_keyboard = create_movie_message(movie_data, movie_link)
         success, _ = await send_movie_post(TELEGRAM_CHANNEL_ID, movie_data, movie_link, post_keyboard)
@@ -1160,42 +1174,50 @@ async def start_voting_command(message: types.Message, state: FSMContext):
     keyboard = types.InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
     await bot.send_message(message.chat.id, text=text + "¡Elige tu favorita para que sea la próxima en publicarse!", reply_markup=keyboard)
 
-    await asyncio.sleep(600)
-    
+    # El temporizador de votación se debe ejecutar en segundo plano y notificar al terminar.
+    asyncio.create_task(end_voting_task(message.chat.id, state))
+
+@dp.callback_query(F.data.startswith("vote_"), VotingStates.waiting_for_votes)
+async def process_vote(callback_query: types.CallbackQuery, state: FSMContext):
+    user_id = callback_query.from_user.id
+    user_data = await state.get_data()
+    voters = user_data.get("voters", set())
+    if user_id in voters:
+        await bot.answer_callback_query(callback_query.id, "Ya has votado. ¡Gracias!")
+        return
+    movie_id = int(callback_query.data.split("_")[1])
+    votes = user_data.get("votes", {})
+    if movie_id in votes:
+        votes[movie_id] += 1
+    else:
+        votes[movie_id] = 1
+    voters.add(user_id)
+    user_data["votes"] = votes
+    user_data["voters"] = voters
+    await state.update_data(user_data)
+    await bot.answer_callback_query(callback_query.id, "¡Voto registrado!")
+
+async def end_voting_task(chat_id, state):
+    await asyncio.sleep(600)  # 10 minutos para votar
     final_data = await state.get_data()
     if not final_data or not final_data.get("votes"):
-        await message.reply("La votación ha terminado sin votos. ¡Intenta de nuevo más tarde!")
+        await bot.send_message(chat_id, "La votación ha terminado sin votos. ¡Intenta de nuevo más tarde!")
         return
 
     winning_movie_id = max(final_data["votes"], key=final_data["votes"].get)
     winning_movie_info = get_movie_by_tmdb_id(winning_movie_id)
     
     if winning_movie_info and final_data["votes"][winning_movie_id] > 0:
-        await message.reply(f"🏆 ¡La película ganadora es **{winning_movie_info.get('names').split(',')[0]}** con {final_data['votes'][winning_movie_id]} votos! Publicando ahora...")
+        await bot.send_message(chat_id, f"🏆 ¡La película ganadora es **{winning_movie_info.get('names').split(',')[0]}** con {final_data['votes'][winning_movie_id]} votos! Publicando ahora...")
         movie_data = get_movie_details(winning_movie_id)
         if movie_data:
             await delete_old_post(winning_movie_id)
             text, poster_url, post_keyboard = create_movie_message(movie_data, winning_movie_info.get("link"))
             await send_movie_post(TELEGRAM_CHANNEL_ID, movie_data, winning_movie_info.get("link"), post_keyboard)
     else:
-        await message.reply("La votación ha terminado sin votos. ¡Intenta de nuevo más tarde!")
+        await bot.send_message(chat_id, "La votación ha terminado sin votos. ¡Intenta de nuevo más tarde!")
 
     await state.clear()
-
-@dp.callback_query(F.data.startswith("vote_"), VotingStates.waiting_for_votes)
-async def process_vote(callback_query: types.CallbackQuery, state: FSMContext):
-    user_id = callback_query.from_user.id
-    user_data = await state.get_data()
-    voters = user_data["voters"]
-    if user_id in voters:
-        await bot.answer_callback_query(callback_query.id, "Ya has votado. ¡Gracias!")
-        return
-    movie_id = int(callback_query.data.split("_")[1])
-    user_data["votes"][movie_id] += 1
-    user_data["voters"].add(user_id)
-    await state.update_data(user_data)
-    await bot.answer_callback_query(callback_query.id, "¡Voto registrado!")
-
 
 # --- Automated tasks
 async def auto_post_scheduler():
