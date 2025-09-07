@@ -1340,21 +1340,21 @@ async def main():
     try:
         creds = ServiceAccountCredentials.from_json_keyfile_dict({
             "type": "service_account",
-            "project_id": "api-project-1082159846205",
-            "private_key_id": "YOUR_PRIVATE_KEY_ID", # This will be added by Render automatically from the private key
+            "project_id": "calcium-vector-471418-v5",
+            "private_key_id": "3669e2fa47228a330c83aba91f441642992987a3", # REEMPLAZA ESTE VALOR CON EL DE TU JSON
             "private_key": GOOGLE_PRIVATE_KEY,
             "client_email": GOOGLE_CLIENT_EMAIL,
-            "client_id": "1082159846205", # This is a dummy client id and will be replaced by Render
+            "client_id": "115696355713152214007", # REEMPLAZA ESTE VALOR CON EL DE TU JSON
             "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-            "token_uri": "https://accounts.google.com/o/oauth2/token",
+            "token_uri": "https://oauth2.googleapis.com/token",
             "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-            "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/YOUR_CLIENT_EMAIL" # This will be replaced by Render
+            "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/mi-nuevo-proyecto%40calcium-vector-471418-v5.iam.gserviceaccount.com" # REEMPLAZA ESTE VALOR CON EL DE TU JSON
         }, GOOGLE_SCOPES)
         gc = gspread.authorize(creds)
         worksheet = gc.open_by_url(GOOGLE_SHEETS_URL).sheet1
         logging.info("Conexión con Google Sheets exitosa.")
     except Exception as e:
-        logging.error(f"Error al conectar con Google Sheets. Asegúrate de que las variables de entorno están bien configuradas. Error: {e}")
+        logging.error(f"Error al conectar con Google Sheets. Asegúrese de que las variables de entorno están bien configuradas. Error: {e}")
         return
 
     load_movies_db()
