@@ -1188,6 +1188,9 @@ async def channel_content_scheduler():
             await asyncio.sleep(60)
 
 # --- WEBHOOK SETUP ---
+async def handle_home(request):
+    return web.Response(text="Tu bot está activo y funcionando. ¡El webhook está configurado!")
+
 async def on_startup(app):
     WEBHOOK_URL = os.environ.get('RENDER_EXTERNAL_URL') + '/webhook'
     await bot.set_webhook(WEBHOOK_URL)
@@ -1206,6 +1209,7 @@ async def handle_telegram_webhook(request):
 async def start_webhook_server():
     app = web.Application()
     app.router.add_post('/webhook', handle_telegram_webhook)
+    app.router.add_get('/', handle_home)
     app.on_startup.append(on_startup)
     runner = web.AppRunner(app)
     await runner.setup()
