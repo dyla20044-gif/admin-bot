@@ -649,13 +649,46 @@ async def show_movies_by_genre(callback_query: types.CallbackQuery):
     if not movies:
         await bot.send_message(callback_query.message.chat.id, "No se encontraron películas para este género.")
         return
-    text = "**Aquí tienes algunas películas populares para este género:**\n\n"
-    keyboard_buttons = []
+
+    await bot.send_message(callback_query.message.chat.id, "**Aquí tienes algunas películas populares para este género:**", parse_mode=ParseMode.MARKDOWN)
+
     for movie in movies:
-        text += f"- {movie.get('title')} ({movie.get('release_date', 'N/A')[:4]})\n"
-        keyboard_buttons.append([types.InlineKeyboardButton(text=f"Pedir '{movie.get('title')}'", callback_data=f"request_movie_by_id_{movie.get('id')}")])
-    keyboard = types.InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
-    await bot.send_message(callback_query.message.chat.id, text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
+        tmdb_id = movie.get("id")
+        movie_data = get_movie_details(tmdb_id)
+        if not movie_data:
+            continue
+        
+        movie_in_db = get_movie_by_tmdb_id(tmdb_id)
+        
+        if movie_in_db:
+            keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+                [types.InlineKeyboardButton(text="🎬 Publicar ahora", callback_data=f"publish_now_manual_{tmdb_id}")]
+            ])
+        else:
+            keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+                [types.InlineKeyboardButton(text="🎬 Pedir esta película", callback_data=f"request_movie_by_id_{tmdb_id}")]
+            ])
+
+        text, poster_url, _ = create_movie_message(movie_data)
+        
+        try:
+            if poster_url:
+                await bot.send_photo(
+                    chat_id=callback_query.message.chat.id,
+                    photo=poster_url,
+                    caption=text,
+                    reply_markup=keyboard,
+                    parse_mode=ParseMode.HTML
+                )
+            else:
+                await bot.send_message(
+                    chat_id=callback_query.message.chat.id,
+                    text=text,
+                    reply_markup=keyboard,
+                    parse_mode=ParseMode.HTML
+                )
+        except Exception as e:
+            logging.error(f"Error al enviar la publicación en el catálogo: {e}")
 
 @dp.callback_query(F.data == "search_by_actor")
 async def search_by_actor_callback(callback_query: types.CallbackQuery, state: FSMContext):
@@ -1066,8 +1099,15 @@ async def channel_content_scheduler():
                 if popular_movies:
                     movie = random.choice(popular_movies)
                     text = f"**Novedad del cine:** '{movie.get('title')}' - {movie.get('overview', 'Sinopsis no disponible')}"
+                    
+                    poster_path = movie.get("poster_path")
+                    poster_url = f"{POSTER_BASE_URL}{poster_path}" if poster_path else None
+                    
                     try:
-                        await bot.send_message(TELEGRAM_CHANNEL_ID, text, parse_mode=ParseMode.MARKDOWN)
+                        if poster_url:
+                            await bot.send_photo(TELEGRAM_CHANNEL_ID, photo=poster_url, caption=text, parse_mode=ParseMode.MARKDOWN)
+                        else:
+                            await bot.send_message(TELEGRAM_CHANNEL_ID, text, parse_mode=ParseMode.MARKDOWN)
                         logging.info("Noticia de cine publicada con éxito.")
                     except Exception as e:
                         logging.error(f"Error al publicar una noticia: {e}")
