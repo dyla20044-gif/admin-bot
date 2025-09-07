@@ -10,8 +10,7 @@ import time
 import random
 from flask import Flask
 from threading import Thread
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+from github import Github
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.enums import ParseMode
@@ -28,22 +27,15 @@ TMDB_API_KEY = os.getenv("TMDB_API_KEY")
 TRAKT_CLIENT_ID = os.getenv("TRAKT_CLIENT_ID")
 TRAKT_CLIENT_SECRET = os.getenv("TRAKT_CLIENT_SECRET")
 ADMIN_ID = os.getenv("ADMIN_ID")
-GOOGLE_SHEETS_URL = os.getenv("GOOGLE_SHEETS_URL")
-GOOGLE_CLIENT_EMAIL = os.getenv("GOOGLE_CLIENT_EMAIL")
-# --- CORRECCIÓN AQUÍ ---
-GOOGLE_PRIVATE_KEY = os.getenv("GOOGLE_PRIVATE_KEY").replace("\\n", "\n")
-# ------------------------
-GOOGLE_SCOPES = os.getenv("GOOGLE_SCOPES").split()
-# ------------------------
+# --- NUEVAS VARIABLES PARA GITHUB GIST ---
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+GIST_ID = os.getenv("GIST_ID")
+# ----------------------------------------
 
 # Channel ID
 TELEGRAM_CHANNEL_ID = -1002139779491
 BASE_TMDB_URL = "https://api.themoviedb.org/3"
 POSTER_BASE_URL = "https://image.tmdb.org/t/p/w500"
-MOVIES_DB_FILE = "movies.json"
-
-# Trakt.tv constants
-TRAKT_BASE_URL = "https://api.trakt.tv"
 
 # Storage for scheduled posts and recent posts
 scheduled_posts = asyncio.Queue()
@@ -53,7 +45,6 @@ recent_posts = deque(maxlen=20)
 user_requests = {}
 admin_data = {}
 memes = [
-    # URLs corregidas para que apunten directamente a las imágenes
     {"photo_url": "https://i.imgflip.com/64s72q.jpg", "caption": "Cuando te dicen que hay una película nueva... y es la que no querías."},
     {"photo_url": "https://i.imgflip.com/71j22e.jpg", "caption": "Yo esperando la película que pedí en el canal..."},
     {"photo_url": "https://i.imgflip.com/83p14j.jpg", "caption": "Mi reacción cuando el bot me dice que la película ya está en el catálogo."},
@@ -79,9 +70,9 @@ movies_db = {}
 AUTO_POST_COUNT = 4
 MOVIES_PER_PAGE = 5
 
-# Google Sheets setup
-gc = None
-worksheet = None
+# GitHub Gist setup
+g = None
+gist = None
 
 # New states for the state machine
 class MovieUploadStates(StatesGroup):
@@ -91,7 +82,7 @@ class MovieUploadStates(StatesGroup):
 class MovieRequestStates(StatesGroup):
     waiting_for_movie_name = State()
     waiting_for_actor_name = State()
-    waiting_for_confirmation = State() # Nuevo estado para la confirmación
+    waiting_for_confirmation = State()
 
 class AdminStates(StatesGroup):
     waiting_for_auto_post_count = State()
@@ -101,52 +92,45 @@ class AdminStates(StatesGroup):
 class VotingStates(StatesGroup):
     waiting_for_votes = State()
 
-# --- Auxiliary functions for the movie database
+# --- Auxiliary functions for the movie database (GIST)
 def load_movies_db():
     global movies_db
     try:
-        data = worksheet.get_all_records()
-        movies_db = {d.get("title"): d for d in data}
-        logging.info(f"Se cargaron {len(movies_db)} películas de Google Sheets.")
+        content = gist.files[list(gist.files.keys())[0]].content
+        data = json.loads(content)
+        movies_db = {d.get("title"): d for d in data.get("movies", [])}
+        logging.info(f"Se cargaron {len(movies_db)} películas de GitHub Gist.")
     except Exception as e:
-        logging.error(f"Error al cargar la base de datos de Google Sheets: {e}")
+        logging.error(f"Error al cargar la base de datos de GitHub Gist: {e}")
         movies_db = {}
 
 def save_movies_db(movie_data):
     try:
-        title = movie_data.get("title")
-        if title in movies_db:
-            # Update existing row
-            row_index = worksheet.find(title).row
-            row_data = [
-                movie_data.get("title", ""),
-                movie_data.get("names", ""),
-                movie_data.get("id", ""),
-                movie_data.get("link", ""),
-                movie_data.get("last_message_id", "")
-            ]
-            worksheet.update(f'A{row_index}:E{row_index}', [row_data])
-            logging.info(f"Película '{title}' actualizada en Google Sheets.")
-        else:
-            # Append new row
-            row_data = [
-                movie_data.get("title", ""),
-                ", ".join(movie_data.get("names", [])),
-                movie_data.get("id", ""),
-                movie_data.get("link", ""),
-                movie_data.get("last_message_id", "")
-            ]
-            worksheet.append_row(row_data)
-            logging.info(f"Película '{title}' agregada a Google Sheets.")
+        load_movies_db()
+        movies_list = list(movies_db.values())
         
-        movies_db[title] = movie_data
+        found = False
+        for i, movie in enumerate(movies_list):
+            if movie.get("id") == movie_data.get("id"):
+                movies_list[i] = movie_data
+                found = True
+                break
+        
+        if not found:
+            movies_list.append(movie_data)
+        
+        new_content = json.dumps({"movies": movies_list}, indent=2, ensure_ascii=False)
+        gist.edit(files={list(gist.files.keys())[0]: {"content": new_content}})
+        
+        movies_db = {d.get("title"): d for d in movies_list}
+        logging.info(f"Base de datos de películas actualizada en GitHub Gist.")
     except Exception as e:
-        logging.error(f"Error al guardar la película en Google Sheets: {e}")
+        logging.error(f"Error al guardar la película en GitHub Gist: {e}")
 
 def find_movie_in_db(title_to_find):
-    load_movies_db() # Reload to get latest data
+    load_movies_db()
     for main_title, movie_data in movies_db.items():
-        if "names" in movie_data and title_to_find.lower() in [name.lower() for name in movie_data["names"].split(", ")]:
+        if "names" in movie_data and title_to_find.lower() in [name.lower().strip() for name in movie_data["names"].split(",")]:
             return main_title, movie_data
         elif main_title.lower() == title_to_find.lower():
             return main_title, movie_data
@@ -925,7 +909,6 @@ async def show_movies_by_actor(message: types.Message, state: FSMContext):
             
         text, poster_url, _ = create_movie_message(movie_data)
         
-        # Check if the movie already exists in the local database
         movie_in_db = get_movie_by_tmdb_id(tmdb_id)
         
         if movie_in_db:
@@ -967,11 +950,9 @@ async def request_movie_from_user(callback_query: types.CallbackQuery, state: FS
 async def process_movie_request(message: types.Message, state: FSMContext):
     movie_title = message.text.strip()
     
-    # Check for a movie in the local database first
     main_title_db, movie_info_db = find_movie_in_db(movie_title)
     
     if movie_info_db:
-        # If found in DB, post it automatically
         movie_id = movie_info_db.get("id")
         movie_link = movie_info_db.get("link")
         movie_data = get_movie_details(movie_id)
@@ -994,7 +975,6 @@ async def process_movie_request(message: types.Message, state: FSMContext):
         await state.clear()
         return
 
-    # If not in the local DB, search in TMDB and show options
     await message.reply("Buscando en la base de datos de películas...")
     
     year_match = re.search(r'\((19|20)\d{2}\)', movie_title)
@@ -1010,11 +990,10 @@ async def process_movie_request(message: types.Message, state: FSMContext):
         await state.clear()
         return
 
-    # Store search results temporarily for the user
     user_requests[message.from_user.id] = {
-        "results": movie_results[:5], # Only show top 5 results
+        "results": movie_results[:5],
         "query": movie_title,
-        "message_ids": [] # Store message IDs to delete later
+        "message_ids": []
     }
     
     await message.reply("Encontré varias coincidencias. Por favor, elige la película correcta de la lista:")
@@ -1048,7 +1027,6 @@ async def process_movie_request(message: types.Message, state: FSMContext):
 async def confirm_movie_request(callback_query: types.CallbackQuery, state: FSMContext):
     user_id = callback_query.from_user.id
     
-    # Clear old messages for the user's current request
     if user_id in user_requests:
         del user_requests[user_id]
         
@@ -1063,11 +1041,9 @@ async def confirm_movie_request(callback_query: types.CallbackQuery, state: FSMC
         
     movie_title = movie_data.get("title")
     
-    # Check if the movie already exists in the local database
     movie_info_db = get_movie_by_tmdb_id(tmdb_id)
     
     if movie_info_db:
-        # If found in DB, post it automatically
         movie_link = movie_info_db.get("link")
         await delete_old_post(tmdb_id)
         text, poster_url, post_keyboard = create_movie_message(movie_data, movie_link)
@@ -1082,7 +1058,6 @@ async def confirm_movie_request(callback_query: types.CallbackQuery, state: FSMC
         else:
             await bot.send_message(callback_query.message.chat.id, "Ocurrió un error al intentar publicar la película. Por favor, contacta al administrador.")
     else:
-        # If not in the local DB, send the request to the admin
         keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
             [types.InlineKeyboardButton(text="📌 Publicar ahora esta película", callback_data=f"publish_now_from_trakt_{tmdb_id}")]
         ])
@@ -1336,27 +1311,15 @@ async def start_webhook_server():
 
 # --- MAIN EXECUTION ---
 async def main():
-    global gc, worksheet
+    global g, gist
     
-    # Initialize Google Sheets connection
+    # Initialize GitHub Gist connection
     try:
-        creds = ServiceAccountCredentials.from_json_keyfile_dict({
-            "type": "service_account",
-            "project_id": "calcium-vector-471418-v5",
-            "private_key_id": "3669e2fa47228a330c83aba91f441642992987a3",
-            "private_key": GOOGLE_PRIVATE_KEY,
-            "client_email": GOOGLE_CLIENT_EMAIL,
-            "client_id": "115696355713152214007",
-            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-            "token_uri": "https://oauth2.googleapis.com/token",
-            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-            "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/mi-nuevo-proyecto%40calcium-vector-471418-v5.iam.gserviceaccount.com"
-        }, GOOGLE_SCOPES)
-        gc = gspread.authorize(creds)
-        worksheet = gc.open_by_url(GOOGLE_SHEETS_URL).sheet1
-        logging.info("Conexión con Google Sheets exitosa.")
+        g = Github(GITHUB_TOKEN)
+        gist = g.get_gist(GIST_ID)
+        logging.info("Conexión con GitHub Gist exitosa.")
     except Exception as e:
-        logging.error(f"Error al conectar con Google Sheets. Asegúrese de que las variables de entorno están bien configuradas. Error: {e}")
+        logging.error(f"Error al conectar con GitHub Gist. Asegúrese de que las variables de entorno están bien configuradas. Error: {e}")
         return
 
     load_movies_db()
