@@ -8,8 +8,8 @@ from collections import deque
 import datetime
 import time
 import random
-
-from dotenv import load_dotenv
+from flask import Flask
+from threading import Thread
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.enums import ParseMode
@@ -18,12 +18,27 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
-# --- TUS CREDENCIALES ---
-TELEGRAM_BOT_TOKEN = "7917691049:AAEhSfTfNy78hReXSPSFRtsPJ1GSql4UkJw"
-TMDB_API_KEY = "5eb8461b85d0d88c46d77cfe5436291f"
-TRAKT_CLIENT_ID = "5928d13b5ae098a876a4a081a9675239e1f5cfc1d044265432d660e5edc98b67"
-TRAKT_CLIENT_SECRET = "4360e224e738c82a5146c94628d227f300f2e02f232233f07a61d1558c42b260"
-ADMIN_ID = "6115976248"
+# --- CÓDIGO DEL SERVIDOR WEB ---
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "El bot está en línea y funcionando."
+
+def run():
+    app.run(host='0.0.0.0', port=8080)
+
+def keep_alive():
+    t = Thread(target=run)
+    t.start()
+# --- FIN DEL CÓDIGO DEL SERVIDOR WEB ---
+
+# --- TUS CREDENCIALES (AHORA DESDE VARIABLES DE ENTORNO) ---
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TMDB_API_KEY = os.getenv("TMDB_API_KEY")
+TRAKT_CLIENT_ID = os.getenv("TRAKT_CLIENT_ID")
+TRAKT_CLIENT_SECRET = os.getenv("TRAKT_CLIENT_SECRET")
+ADMIN_ID = os.getenv("ADMIN_ID")
 # ------------------------
 
 # ID del canal de prueba
@@ -845,8 +860,6 @@ async def publish_now_manual_callback(callback_query: types.CallbackQuery):
     else:
         await bot.answer_callback_query(callback_query.id, "Ocurrió un error al publicar la película.", show_alert=True)
 
-# ... (El resto del código sigue igual)
-
 @dp.callback_query(F.data.startswith("request_movie_by_id_"))
 async def request_movie_by_id(callback_query: types.CallbackQuery):
     tmdb_id = int(callback_query.data.split("_")[-1])
@@ -1032,6 +1045,10 @@ async def channel_content_scheduler():
 
 async def main():
     load_movies_db()
+    
+    # Inicia el servidor web en un hilo separado
+    keep_alive()
+
     async with bot.session:
         auto_post_task = asyncio.create_task(auto_post_scheduler())
         scheduled_posts_task = asyncio.create_task(check_scheduled_posts())
