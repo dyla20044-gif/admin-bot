@@ -413,16 +413,14 @@ async def delete_spam_message(message: types.Message):
     except Exception as e:
         logging.error(f"No se pudo eliminar el mensaje de spam: {e}")
 
-# --- CAMBIO IMPORTANTE EN /start ---
+# --- CAMBIO IMPORTANTE: Lógica de /start ---
 @dp.message(Command("start"))
 async def start_command(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     chat_id = message.chat.id
     
-    # Limpiar el estado de FSM para evitar que el bot se confunda
     await state.clear()
     
-    # --- CAMBIO: Lógica para admins vs usuarios ---
     if str(user_id) == ADMIN_ID:
         keyboard = types.ReplyKeyboardMarkup(
             keyboard=[
@@ -435,11 +433,8 @@ async def start_command(message: types.Message, state: FSMContext):
             "¡Hola, Administrador! Elige una opción:",
             reply_markup=keyboard,
         )
-        # Los admins no tienen limpieza de chat para mantener el historial
-        user_message_ids[user_id] = [sent_message.message_id]
-
-    else: # Lógica para usuarios normales
-        # Limpiar el historial para el usuario
+    else:
+        # Lógica para usuarios normales: limpia el historial
         if user_id in user_message_ids:
             for msg_id in user_message_ids[user_id]:
                 try:
@@ -451,7 +446,7 @@ async def start_command(message: types.Message, state: FSMContext):
         user_keyboard = types.ReplyKeyboardMarkup(
             keyboard=[
                 [types.KeyboardButton(text="🔍 Buscar película"), types.KeyboardButton(text="✨ Recomiéndame")],
-                [types.KeyboardButton(text="🎞️ Estrenos"), types.KeyboardButton(text="📰 Noticias")]
+                [types.KeyboardButton(text="🎞️ Estrenos"), types.KeyboardButton(text="📰 Noticias"), types.KeyboardButton(text="🗑️ Borrar caché")]
             ],
             resize_keyboard=True
         )
@@ -465,9 +460,7 @@ async def start_command(message: types.Message, state: FSMContext):
             reply_markup=user_keyboard,
             parse_mode=ParseMode.MARKDOWN
         )
-        # Guarda el ID del nuevo mensaje para futura eliminación
         user_message_ids[user_id].append(sent_message.message_id)
-
 
 @dp.message(F.text == "➕ Agregar película")
 async def add_movie_start_by_text(message: types.Message, state: FSMContext):
@@ -883,18 +876,27 @@ async def show_estrenos_by_text(message: types.Message):
         except Exception as e:
             logging.error(f"Error al enviar estreno: {e}")
 
+# --- CAMBIO IMPORTANTE: Lógica de búsqueda mejorada ---
 @dp.message(F.text == "🔍 Buscar película")
 async def show_search_options_by_text(message: types.Message):
     keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
         [types.InlineKeyboardButton(text="Por Género", callback_data="search_by_genre")],
         [types.InlineKeyboardButton(text="Por Actor", callback_data="search_by_actor")],
-        [types.InlineKeyboardButton(text="Por Nombre", callback_data="search_by_name")],
-        [types.InlineKeyboardButton(text="✨ Solicitar una película", callback_data="request_movie_from_user")]
+        [types.InlineKeyboardButton(text="Buscar Película", callback_data="search_by_name")],
+        [types.InlineKeyboardButton(text="✨ Solicitar una película", callback_data="request_movie_from_user")],
+        [types.InlineKeyboardButton(text="⬅️ Regresar", callback_data="back_to_main_menu")]
     ])
     await message.reply(
         "¿Cómo quieres buscar la película?",
         reply_markup=keyboard
     )
+
+@dp.callback_query(F.data == "back_to_main_menu")
+async def back_to_main_menu(callback_query: types.CallbackQuery, state: FSMContext):
+    await bot.answer_callback_query(callback_query.id)
+    await state.clear()
+    await start_command(callback_query.message, state)
+
 
 @dp.message(F.text == "✨ Recomiéndame")
 async def show_recomendar_by_text(message: types.Message):
