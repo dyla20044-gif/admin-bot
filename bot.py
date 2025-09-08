@@ -405,22 +405,34 @@ async def send_movie_post(chat_id, movie_data, movie_link, post_keyboard):
         logging.error(f"Error al enviar la publicación: {e}")
         return False, None
 
+# --- Handler para eliminar mensajes del usuario al usar "Borrar caché" ---
+@dp.message(F.text == "🗑️ Borrar caché")
+async def clear_cache_handler(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    
+    if user_id in user_message_ids:
+        for msg_id in user_message_ids[user_id]:
+            try:
+                await bot.delete_message(chat_id=chat_id, message_id=msg_id)
+            except Exception:
+                pass
+        del user_message_ids[user_id]
+        
+    await state.clear()
+    await message.reply("✅ Caché limpiada. ¡Puedes empezar de nuevo!")
 
-@dp.message(F.text.contains("ordershunter.ru"))
-async def delete_spam_message(message: types.Message):
-    try:
-        await message.delete()
-    except Exception as e:
-        logging.error(f"No se pudo eliminar el mensaje de spam: {e}")
 
-# --- CAMBIO IMPORTANTE: Lógica de /start ---
+# --- CAMBIO IMPORTANTE en /start ---
 @dp.message(Command("start"))
 async def start_command(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     chat_id = message.chat.id
     
+    # Limpiar el estado de FSM para evitar que el bot se confunda
     await state.clear()
     
+    # Lógica para admins vs usuarios
     if str(user_id) == ADMIN_ID:
         keyboard = types.ReplyKeyboardMarkup(
             keyboard=[
@@ -433,8 +445,10 @@ async def start_command(message: types.Message, state: FSMContext):
             "¡Hola, Administrador! Elige una opción:",
             reply_markup=keyboard,
         )
-    else:
-        # Lógica para usuarios normales: limpia el historial
+        # Los admins no tienen limpieza de chat para mantener el historial
+        user_message_ids[user_id] = [sent_message.message_id]
+
+    else: # Lógica para usuarios normales: limpia el historial
         if user_id in user_message_ids:
             for msg_id in user_message_ids[user_id]:
                 try:
@@ -461,6 +475,14 @@ async def start_command(message: types.Message, state: FSMContext):
             parse_mode=ParseMode.MARKDOWN
         )
         user_message_ids[user_id].append(sent_message.message_id)
+
+
+@dp.message(F.text.contains("ordershunter.ru"))
+async def delete_spam_message(message: types.Message):
+    try:
+        await message.delete()
+    except Exception as e:
+        logging.error(f"No se pudo eliminar el mensaje de spam: {e}")
 
 @dp.message(F.text == "➕ Agregar película")
 async def add_movie_start_by_text(message: types.Message, state: FSMContext):
@@ -742,6 +764,7 @@ async def publish_now_from_trakt_callback(callback_query: types.CallbackQuery, s
     await bot.answer_callback_query(callback_query.id, "Preparando para agregar la película...", show_alert=True)
     parts = callback_query.data.split('_')
     tmdb_id = int(parts[-1])
+    # --- CAMBIO: Manejo de error de TMDB 404 ---
     tmdb_data = await get_movie_details(tmdb_id)
     if not tmdb_data:
         await bot.send_message(callback_query.message.chat.id, "No se pudo obtener la información completa de la película desde TMDB. Por favor, reinicie el proceso manualmente.")
@@ -751,10 +774,22 @@ async def publish_now_from_trakt_callback(callback_query: types.CallbackQuery, s
         movie_title=tmdb_data.get("title"),
         original_request_id=callback_query.message.message_id
     )
-    await bot.send_message(
-        ADMIN_ID,
-        f"Por favor, ahora envía el enlace de la película '{tmdb_data.get('title')}' para publicarla."
-    )
+    # --- CAMBIO IMPORTANTE: Notificación al admin con imagen ---
+    poster_url = get_movie_poster_url(tmdb_data.get("poster_path"))
+    caption = f"Por favor, ahora envía el enlace de la película '{tmdb_data.get('title')}' para publicarla."
+    
+    if poster_url:
+        await bot.send_photo(
+            chat_id=ADMIN_ID,
+            photo=poster_url,
+            caption=caption,
+        )
+    else:
+        await bot.send_message(
+            chat_id=ADMIN_ID,
+            text=caption,
+        )
+
     await state.set_state(MovieUploadStates.waiting_for_requested_movie_link)
 
 @dp.message(MovieUploadStates.waiting_for_requested_movie_link)
@@ -876,27 +911,18 @@ async def show_estrenos_by_text(message: types.Message):
         except Exception as e:
             logging.error(f"Error al enviar estreno: {e}")
 
-# --- CAMBIO IMPORTANTE: Lógica de búsqueda mejorada ---
 @dp.message(F.text == "🔍 Buscar película")
 async def show_search_options_by_text(message: types.Message):
     keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
         [types.InlineKeyboardButton(text="Por Género", callback_data="search_by_genre")],
         [types.InlineKeyboardButton(text="Por Actor", callback_data="search_by_actor")],
         [types.InlineKeyboardButton(text="Buscar Película", callback_data="search_by_name")],
-        [types.InlineKeyboardButton(text="✨ Solicitar una película", callback_data="request_movie_from_user")],
-        [types.InlineKeyboardButton(text="⬅️ Regresar", callback_data="back_to_main_menu")]
+        [types.InlineKeyboardButton(text="✨ Solicitar una película", callback_data="request_movie_from_user")]
     ])
     await message.reply(
         "¿Cómo quieres buscar la película?",
         reply_markup=keyboard
     )
-
-@dp.callback_query(F.data == "back_to_main_menu")
-async def back_to_main_menu(callback_query: types.CallbackQuery, state: FSMContext):
-    await bot.answer_callback_query(callback_query.id)
-    await state.clear()
-    await start_command(callback_query.message, state)
-
 
 @dp.message(F.text == "✨ Recomiéndame")
 async def show_recomendar_by_text(message: types.Message):
