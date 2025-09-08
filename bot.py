@@ -898,7 +898,8 @@ async def send_latest_news_handler(message: types.Message):
                     parse_mode=ParseMode.HTML,
                     disable_web_page_preview=True
                 )
-            except Exception:
+            except Exception as e: # Manejo del error de imagen no válida
+                logging.error(f"Error al enviar la foto de noticia: {e}")
                 await bot.send_message(
                     chat_id=message.chat.id,
                     text=news_text,
@@ -913,7 +914,6 @@ async def send_latest_news_handler(message: types.Message):
                 disable_web_page_preview=True
             )
 
-# --- CAMBIO IMPORTANTE: Botón de Regresar en el menú de géneros ---
 @dp.callback_query(F.data == "search_by_genre")
 async def search_by_genre_callback(callback_query: types.CallbackQuery):
     await bot.answer_callback_query(callback_query.id)
@@ -928,7 +928,6 @@ async def back_to_search_menu(callback_query: types.CallbackQuery):
     await show_search_options_by_text(callback_query.message)
 
 
-# --- CAMBIO IMPORTANTE: Botón Siguiente al final del listado de películas por género ---
 @dp.callback_query(F.data.startswith("genre_"))
 async def show_movies_by_genre(callback_query: types.CallbackQuery, page=1):
     await bot.answer_callback_query(callback_query.id)
@@ -945,6 +944,7 @@ async def show_movies_by_genre(callback_query: types.CallbackQuery, page=1):
 
     for movie in movies[:5]:
         tmdb_id = movie.get("id")
+        # Manejo de error para 404 en TMDB
         tmdb_data = await get_movie_details(tmdb_id)
         if not tmdb_data:
             continue
@@ -970,7 +970,6 @@ async def show_movies_by_genre(callback_query: types.CallbackQuery, page=1):
         except Exception as e:
             logging.error(f"Error al enviar la publicación en el catálogo: {e}")
 
-    # Ahora sí, al final, enviamos los botones de paginación
     keyboard_buttons = []
     if page > 1:
         keyboard_buttons.append(types.InlineKeyboardButton(text="⬅️ Anterior", callback_data=f"genre_page_{genre_id}_{page-1}"))
@@ -993,7 +992,6 @@ async def navigate_genre_page(callback_query: types.CallbackQuery):
         logging.error(f"Error al borrar mensaje de catálogo: {e}")
     await show_movies_by_genre(callback_query, page=page)
 
-# --- CAMBIO IMPORTANTE: Búsqueda continua. Nuevo handler para el estado de espera de búsqueda ---
 @dp.callback_query(F.data == "search_by_actor")
 async def search_by_actor_callback(callback_query: types.CallbackQuery, state: FSMContext):
     await bot.answer_callback_query(callback_query.id)
@@ -1046,11 +1044,10 @@ async def process_search_query(message: types.Message, state: FSMContext):
         await state.clear()
         return
 
-    # --- CAMBIO IMPORTANTE: Muestra más resultados y agrega paginación ---
     if not movie_results:
         await message.reply(f"No se encontraron resultados para '{search_query}'. Por favor, intenta con otra búsqueda o usa /cancelar para salir.")
         return
-
+    
     await message.reply(f"Resultados para '{search_query}':")
     
     keyboard_buttons = []
@@ -1084,7 +1081,6 @@ async def navigate_search_results(callback_query: types.CallbackQuery):
     search_query = parts[3]
     search_type = parts[4]
 
-    # Vuelve a buscar y navega
     if search_type == 'name':
         all_results = await get_movie_results_by_title(search_query)
     elif search_type == 'actor':
@@ -1150,6 +1146,7 @@ async def confirm_movie_request(callback_query: types.CallbackQuery, state: FSMC
     await bot.answer_callback_query(callback_query.id)
     
     tmdb_id = int(callback_query.data.split("_")[-1])
+    # Manejo de error para 404 en TMDB
     tmdb_data = await get_movie_details(tmdb_id)
     if not tmdb_data:
         await bot.send_message(callback_query.message.chat.id, "No se pudo obtener la información de la película. Por favor, inténtalo de nuevo.")
@@ -1191,10 +1188,6 @@ async def confirm_movie_request(callback_query: types.CallbackQuery, state: FSMC
     
     await state.clear()
 
-@dp.message(MovieRequestStates.waiting_for_confirmation)
-async def handle_non_callback_message(message: types.Message):
-    await message.reply("Por favor, elige una de las opciones del catálogo o reinicia la búsqueda.")
-    
 @dp.callback_query(F.data.startswith("request_movie_by_id_"))
 async def request_movie_by_id(callback_query: types.CallbackQuery, state: FSMContext):
     await bot.answer_callback_query(callback_query.id)
@@ -1389,7 +1382,6 @@ async def channel_content_scheduler():
                 if articles:
                     article = random.choice(articles)
                     
-                    # Usamos HTML para el formato
                     text = (
                         f"<b>{html.quote(article.get('title', 'Sin título'))}</b>\n\n"
                         f"<i>{html.quote(article.get('description', 'Sinopsis no disponible'))}</i>\n\n"
@@ -1411,7 +1403,7 @@ async def channel_content_scheduler():
             logging.error(f"Error en el programador de contenido del canal: {e}")
             await asyncio.sleep(60)
 
-# WEBHOOK SETUP - No modificado
+# WEBHOOK SETUP
 async def handle_home(request):
     return web.Response(text="Tu bot está activo y funcionando. ¡El webhook está configurado!")
 
@@ -1440,7 +1432,7 @@ async def start_webhook_server():
     site = web.TCPSite(runner, '0.0.0.0', int(os.environ.get('PORT', 8080)))
     await site.start()
 
-# --- MAIN EXECUTION - No modificado
+# --- MAIN EXECUTION
 async def main():
     
     auto_post_task = asyncio.create_task(auto_post_scheduler())
