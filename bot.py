@@ -828,7 +828,6 @@ async def show_estrenos_by_text(message: types.Message):
         except Exception as e:
             logging.error(f"Error al enviar estreno: {e}")
 
-# --- CAMBIO IMPORTANTE: Búsqueda múltiple de resultados con paginación ---
 @dp.message(F.text == "🔍 Buscar película")
 async def show_search_options_by_text(message: types.Message):
     keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
@@ -1008,7 +1007,7 @@ async def ask_for_movie_by_name(callback_query: types.CallbackQuery, state: FSMC
     await state.update_data(search_type='name')
     await bot.send_message(
         chat_id=callback_query.message.chat.id,
-        text="Por favor, escribe el nombre de la película. Si hay muchas coincidencias, puedes agregar el año para una búsqueda más precisa. Ejemplo: `Volver al futuro (1985)`. Puedes volver al menú principal de búsqueda en cualquier momento presionando /cancelar."
+        text="Por favor, escribe el nombre de la película. Si hay muchas coincidencias, puedes agregar el año para que la búsqueda sea más precisa. Puedes volver al menú principal de búsqueda en cualquier momento presionando /cancelar."
     )
     await state.set_state(MovieRequestStates.waiting_for_search_query)
 
@@ -1018,7 +1017,7 @@ async def request_movie_from_user(callback_query: types.CallbackQuery, state: FS
     await state.update_data(search_type='request')
     await bot.send_message(
         chat_id=callback_query.message.chat.id,
-        text="Por favor, escribe el nombre de la película que te gustaría solicitar. Puedes agregar el año para una búsqueda más precisa. Ejemplo: `Volver al futuro (1985)`. Puedes volver al menú principal de búsqueda en cualquier momento presionando /cancelar."
+        text="Por favor, escribe el nombre de la película que te gustaría solicitar. Puedes volver al menú principal de búsqueda en cualquier momento presionando /cancelar."
     )
     await state.set_state(MovieRequestStates.waiting_for_search_query)
 
@@ -1047,12 +1046,14 @@ async def process_search_query(message: types.Message, state: FSMContext):
         await state.clear()
         return
 
+    # --- CAMBIO IMPORTANTE: Muestra más resultados y agrega paginación ---
     if not movie_results:
         await message.reply(f"No se encontraron resultados para '{search_query}'. Por favor, intenta con otra búsqueda o usa /cancelar para salir.")
         return
+
+    await message.reply(f"Resultados para '{search_query}':")
     
-    # Procesa los resultados y los envía al usuario
-    sent_message_ids = []
+    keyboard_buttons = []
     
     for movie in movie_results[:SEARCH_RESULTS_PER_PAGE]:
         tmdb_id = movie.get("id")
@@ -1062,25 +1063,76 @@ async def process_search_query(message: types.Message, state: FSMContext):
             
         movie_in_db = await get_movie_by_tmdb_id(tmdb_id)
         
-        keyboard_buttons = []
-        if movie_in_db:
-            keyboard_buttons.append([types.InlineKeyboardButton(text="🎬 Publicar ahora", callback_data=f"publish_now_manual_{tmdb_id}")])
-        else:
-            keyboard_buttons.append([types.InlineKeyboardButton(text="🎬 Pedir esta película", callback_data=f"request_movie_by_id_{tmdb_id}")])
-
-        text, poster_url, _ = create_movie_message(tmdb_data)
+        button_text = f"🎬 Publicar '{tmdb_data.get('title')}'" if movie_in_db else f"🎬 Pedir '{tmdb_data.get('title')}'"
+        callback_data = f"publish_now_manual_{tmdb_id}" if movie_in_db else f"request_movie_by_id_{tmdb_id}"
         
-        try:
-            if poster_url:
-                sent_message = await bot.send_photo(chat_id=message.chat.id, photo=poster_url, caption=text, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=keyboard_buttons), parse_mode=ParseMode.HTML)
-            else:
-                sent_message = await bot.send_message(chat_id=message.chat.id, text=text, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=keyboard_buttons), parse_mode=ParseMode.HTML)
-            sent_message_ids.append(sent_message.message_id)
-        except Exception as e:
-            logging.error(f"Error al enviar la opción de película: {e}")
+        keyboard_buttons.append([types.InlineKeyboardButton(text=button_text, callback_data=callback_data)])
+
+    if len(movie_results) > SEARCH_RESULTS_PER_PAGE:
+        keyboard_buttons.append([types.InlineKeyboardButton(text="Siguiente ➡️", callback_data=f"search_page_1_{search_query}_{search_type}")])
+
+    keyboard_buttons.append([types.InlineKeyboardButton(text="❌ Cancelar", callback_data="cancel_search_results")])
+
+    keyboard = types.InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
+    await bot.send_message(message.chat.id, "Elige una película o continúa la búsqueda:", reply_markup=keyboard)
+
+
+@dp.callback_query(F.data.startswith("search_page_"))
+async def navigate_search_results(callback_query: types.CallbackQuery):
+    parts = callback_query.data.split('_')
+    page = int(parts[2])
+    search_query = parts[3]
+    search_type = parts[4]
+
+    # Vuelve a buscar y navega
+    if search_type == 'name':
+        all_results = await get_movie_results_by_title(search_query)
+    elif search_type == 'actor':
+        all_results = await get_movies_by_actor(search_query)
+    elif search_type == 'request':
+        all_results = await get_movie_results_by_title(search_query)
+    else:
+        await bot.answer_callback_query(callback_query.id, "Error en el tipo de búsqueda.")
+        return
+
+    start = page * SEARCH_RESULTS_PER_PAGE
+    end = start + SEARCH_RESULTS_PER_PAGE
+    page_results = all_results[start:end]
+
+    keyboard_buttons = []
+    for movie in page_results:
+        tmdb_id = movie.get("id")
+        tmdb_data = await get_movie_details(tmdb_id)
+        if not tmdb_data:
+            continue
+        
+        movie_in_db = await get_movie_by_tmdb_id(tmdb_id)
+        button_text = f"🎬 Publicar '{tmdb_data.get('title')}'" if movie_in_db else f"🎬 Pedir '{tmdb_data.get('title')}'"
+        callback_data = f"publish_now_manual_{tmdb_id}" if movie_in_db else f"request_movie_by_id_{tmdb_id}"
+        
+        keyboard_buttons.append([types.InlineKeyboardButton(text=button_text, callback_data=callback_data)])
+
+    pagination_buttons = []
+    if page > 0:
+        pagination_buttons.append(types.InlineKeyboardButton(text="⬅️ Anterior", callback_data=f"search_page_{page-1}_{search_query}_{search_type}"))
+    if end < len(all_results):
+        pagination_buttons.append(types.InlineKeyboardButton(text="Siguiente ➡️", callback_data=f"search_page_{page+1}_{search_query}_{search_type}"))
     
-    # Guarda los IDs de los mensajes para futura limpieza
-    user_requests[message.from_user.id] = {"message_ids": sent_message_ids}
+    if pagination_buttons:
+        keyboard_buttons.append(pagination_buttons)
+
+    keyboard_buttons.append([types.InlineKeyboardButton(text="❌ Cancelar", callback_data="cancel_search_results")])
+
+    keyboard = types.InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
+    await bot.edit_message_text(chat_id=callback_query.message.chat.id, message_id=callback_query.message.message_id, text="Aquí están los siguientes resultados:", reply_markup=keyboard)
+
+
+@dp.callback_query(F.data == "cancel_search_results")
+async def cancel_search_results(callback_query: types.CallbackQuery, state: FSMContext):
+    await bot.answer_callback_query(callback_query.id)
+    await bot.delete_message(chat_id=callback_query.message.chat.id, message_id=callback_query.message.message_id)
+    await state.clear()
+    await show_search_options_by_text(callback_query.message)
 
 
 @dp.callback_query(F.data.startswith("confirm_request_"))
@@ -1359,7 +1411,7 @@ async def channel_content_scheduler():
             logging.error(f"Error en el programador de contenido del canal: {e}")
             await asyncio.sleep(60)
 
-# --- WEBHOOK SETUP ---
+# WEBHOOK SETUP - No modificado
 async def handle_home(request):
     return web.Response(text="Tu bot está activo y funcionando. ¡El webhook está configurado!")
 
@@ -1388,15 +1440,13 @@ async def start_webhook_server():
     site = web.TCPSite(runner, '0.0.0.0', int(os.environ.get('PORT', 8080)))
     await site.start()
 
-# --- MAIN EXECUTION ---
+# --- MAIN EXECUTION - No modificado
 async def main():
     
-    # Inicia las tareas automáticas
     auto_post_task = asyncio.create_task(auto_post_scheduler())
     scheduled_posts_task = asyncio.create_task(check_scheduled_posts())
     channel_content_task = asyncio.create_task(channel_content_scheduler())
     
-    # Inicia el servidor de webhook
     webhook_task = asyncio.create_task(start_webhook_server())
 
     try:
