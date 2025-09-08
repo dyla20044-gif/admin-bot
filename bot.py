@@ -96,7 +96,6 @@ def save_movie_to_db(movie_data):
         cursor.execute("SELECT id FROM movies WHERE id = %s", (movie_data.get("id"),))
         existing_id = cursor.fetchone()
         
-        # Corregido: Se aseguran los valores de las claves antes de usarlos
         movie_id = movie_data.get("id")
         title = movie_data.get("title")
         names = movie_data.get("names")
