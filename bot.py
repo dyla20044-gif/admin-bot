@@ -110,7 +110,7 @@ def save_movies_db(movie_data):
     global movies_db
     try:
         # Carga siempre la última versión para evitar conflictos
-        load_movies_db() 
+        load_movies_db()
         
         movie_id = movie_data.get("id")
         if not movie_id:
@@ -583,14 +583,18 @@ async def add_movie_info(message: types.Message, state: FSMContext):
         )
         return
         
-    movie_data = get_movie_details(found_movie_id)
-    if not movie_data:
+    tmdb_data = get_movie_details(found_movie_id)
+    if not tmdb_data:
         await message.reply("Ocurrió un error al obtener los detalles de la película desde TMDB.")
         return
 
-    movie_data["names"] = ", ".join(names)
-    movie_data["link"] = movie_link
-    movie_data["last_message_id"] = None
+    movie_data = {
+        "id": tmdb_data.get("id"),
+        "title": tmdb_data.get("title"),
+        "names": ", ".join(names),
+        "link": movie_link,
+        "last_message_id": None
+    }
     
     save_movies_db(movie_data)
     await state.clear()
@@ -623,21 +627,15 @@ async def publish_now_manual_callback(callback_query: types.CallbackQuery):
         await bot.answer_callback_query(callback_query.id, "Error: película no encontrada en la base de datos.", show_alert=True)
         return
     
-    movie_data = get_movie_details(movie_id)
-    if not movie_data:
-        movie_data = {
-            "title": movie_info.get("names").split(",")[0],
-            "overview": "Sinopsis no disponible",
-            "vote_average": 0,
-            "release_date": "N/A",
-            "poster_path": None,
-            "id": movie_id
-        }
+    tmdb_data = get_movie_details(movie_id)
+    if not tmdb_data:
+        await bot.answer_callback_query(callback_query.id, "No se pudo obtener la información de la película. No se puede publicar.", show_alert=True)
+        return
     
     await delete_old_post(movie_id)
-    text, poster_url, post_keyboard = create_movie_message(movie_data, movie_info.get("link"))
+    text, poster_url, post_keyboard = create_movie_message(tmdb_data, movie_info.get("link"))
     
-    success, _ = await send_movie_post(TELEGRAM_CHANNEL_ID, movie_data, movie_info.get("link"), post_keyboard)
+    success, _ = await send_movie_post(TELEGRAM_CHANNEL_ID, tmdb_data, movie_info.get("link"), post_keyboard)
     
     if success:
         await bot.answer_callback_query(callback_query.id, "✅ Película publicada con éxito.", show_alert=True)
@@ -653,18 +651,18 @@ async def publish_now_from_trakt_callback(callback_query: types.CallbackQuery, s
     await bot.answer_callback_query(callback_query.id, "Preparando para agregar la película...", show_alert=True)
     parts = callback_query.data.split('_')
     tmdb_id = int(parts[-1])
-    movie_data = get_movie_details(tmdb_id)
-    if not movie_data:
+    tmdb_data = get_movie_details(tmdb_id)
+    if not tmdb_data:
         await bot.send_message(callback_query.message.chat.id, "No se pudo obtener la información completa de la película desde TMDB. Por favor, reinicie el proceso manualmente.")
         return
     await state.update_data(
         tmdb_id=tmdb_id,
-        movie_title=movie_data.get("title"),
+        movie_title=tmdb_data.get("title"),
         original_request_id=callback_query.message.message_id
     )
     await bot.send_message(
         ADMIN_ID,
-        f"Por favor, ahora envía el enlace de la película '{movie_data.get('title')}' para publicarla."
+        f"Por favor, ahora envía el enlace de la película '{tmdb_data.get('title')}' para publicarla."
     )
     await state.set_state(MovieUploadStates.waiting_for_requested_movie_link)
 
@@ -682,26 +680,26 @@ async def process_requested_movie_link(message: types.Message, state: FSMContext
     if not tmdb_id or not movie_title:
         await message.reply("Ocurrió un error. Por favor, reenvía el enlace. Si el problema persiste, inicia el proceso de nuevo.")
         return
-    movie_data = get_movie_details(tmdb_id)
-    if not movie_data:
+    tmdb_data = get_movie_details(tmdb_id)
+    if not tmdb_data:
         await message.reply("No se pudo obtener la información de la película desde TMDB. Reenvía el enlace o cancela el proceso.")
         return
-    main_title = movie_data.get("title")
+    main_title = tmdb_data.get("title")
     names = [main_title]
-    if movie_data.get("original_title") and movie_data.get("original_title") != main_title:
-        names.append(movie_data.get("original_title"))
+    if tmdb_data.get("original_title") and tmdb_data.get("original_title") != main_title:
+        names.append(tmdb_data.get("original_title"))
     
     new_movie = {
         "title": main_title,
         "names": ", ".join(names),
         "id": tmdb_id,
         "link": movie_link,
-        "last_message_id": None # Corregido: Se guarda como None, que en JSON es null
+        "last_message_id": None 
     }
     save_movies_db(new_movie)
     await delete_old_post(tmdb_id)
-    text, poster_url, post_keyboard = create_movie_message(movie_data, movie_link)
-    success, _ = await send_movie_post(TELEGRAM_CHANNEL_ID, movie_data, movie_link, post_keyboard)
+    text, poster_url, post_keyboard = create_movie_message(tmdb_data, movie_link)
+    success, _ = await send_movie_post(TELEGRAM_CHANNEL_ID, tmdb_data, movie_link, post_keyboard)
     await state.clear()
     if success:
         await message.reply("✅ Película agregada a la base de datos y publicada con éxito.")
@@ -762,8 +760,8 @@ async def show_estrenos_by_text(message: types.Message):
     
     for movie in upcoming_movies[:5]:
         tmdb_id = movie.get("id")
-        movie_data = get_movie_details(tmdb_id)
-        if not movie_data:
+        tmdb_data = get_movie_details(tmdb_id)
+        if not tmdb_data:
             continue
         
         movie_in_db = get_movie_by_tmdb_id(tmdb_id)
@@ -777,7 +775,7 @@ async def show_estrenos_by_text(message: types.Message):
                 [types.InlineKeyboardButton(text="🎬 Pedir esta película", callback_data=f"request_movie_by_id_{tmdb_id}")]
             ])
 
-        text, poster_url, _ = create_movie_message(movie_data)
+        text, poster_url, _ = create_movie_message(tmdb_data)
         
         try:
             if poster_url:
@@ -812,14 +810,14 @@ async def show_recomendar_by_text(message: types.Message):
 
     for movie in popular_movies[:5]:
         tmdb_id = movie.get("id")
-        movie_data = get_movie_details(tmdb_id)
-        if not movie_data:
+        tmdb_data = get_movie_details(tmdb_id)
+        if not tmdb_data:
             continue
 
         keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
             [types.InlineKeyboardButton(text="🎬 Pedir esta película", callback_data=f"request_movie_by_id_{tmdb_id}")]
         ])
-        text, poster_url, _ = create_movie_message(movie_data)
+        text, poster_url, _ = create_movie_message(tmdb_data)
         
         try:
             if poster_url:
@@ -861,8 +859,8 @@ async def show_movies_by_genre(callback_query: types.CallbackQuery, page=1):
 
     for movie in movies[:5]:
         tmdb_id = movie.get("id")
-        movie_data = get_movie_details(tmdb_id)
-        if not movie_data:
+        tmdb_data = get_movie_details(tmdb_id)
+        if not tmdb_data:
             continue
         
         movie_in_db = get_movie_by_tmdb_id(tmdb_id)
@@ -876,7 +874,7 @@ async def show_movies_by_genre(callback_query: types.CallbackQuery, page=1):
                 [types.InlineKeyboardButton(text="🎬 Pedir esta película", callback_data=f"request_movie_by_id_{tmdb_id}")]
             ])
 
-        text, poster_url, _ = create_movie_message(movie_data)
+        text, poster_url, _ = create_movie_message(tmdb_data)
         
         try:
             if poster_url:
@@ -914,11 +912,11 @@ async def show_movies_by_actor(message: types.Message, state: FSMContext):
         
     for movie in movies:
         tmdb_id = movie.get("id")
-        movie_data = get_movie_details(tmdb_id)
-        if not movie_data:
+        tmdb_data = get_movie_details(tmdb_id)
+        if not tmdb_data:
             continue
             
-        text, poster_url, _ = create_movie_message(movie_data)
+        text, poster_url, _ = create_movie_message(tmdb_data)
         
         movie_in_db = get_movie_by_tmdb_id(tmdb_id)
         
@@ -966,14 +964,14 @@ async def process_movie_request(message: types.Message, state: FSMContext):
     if movie_info_db:
         movie_id = movie_info_db.get("id")
         movie_link = movie_info_db.get("link")
-        movie_data = get_movie_details(movie_id)
-        if not movie_data:
+        tmdb_data = get_movie_details(movie_id)
+        if not tmdb_data:
             await message.reply("Lo siento, hubo un problema al obtener la información de la película. Por favor, intenta de nuevo más tarde.")
             return
 
         await delete_old_post(movie_id)
-        text, poster_url, post_keyboard = create_movie_message(movie_data, movie_link)
-        success, _ = await send_movie_post(TELEGRAM_CHANNEL_ID, movie_data, movie_link, post_keyboard)
+        text, poster_url, post_keyboard = create_movie_message(tmdb_data, movie_link)
+        success, _ = await send_movie_post(TELEGRAM_CHANNEL_ID, tmdb_data, movie_link, post_keyboard)
         
         if success:
             await message.reply(
@@ -1011,11 +1009,11 @@ async def process_movie_request(message: types.Message, state: FSMContext):
     
     for movie in movie_results[:5]:
         tmdb_id = movie.get("id")
-        movie_data = get_movie_details(tmdb_id)
-        if not movie_data:
+        tmdb_data = get_movie_details(tmdb_id)
+        if not tmdb_data:
             continue
             
-        text, poster_url, _ = create_movie_message(movie_data)
+        text, poster_url, _ = create_movie_message(tmdb_data)
         
         keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
             [types.InlineKeyboardButton(text="🎬 Elegir esta película", callback_data=f"confirm_request_{tmdb_id}")]
@@ -1049,21 +1047,21 @@ async def confirm_movie_request(callback_query: types.CallbackQuery, state: FSMC
     await bot.answer_callback_query(callback_query.id)
     
     tmdb_id = int(callback_query.data.split("_")[-1])
-    movie_data = get_movie_details(tmdb_id)
-    if not movie_data:
+    tmdb_data = get_movie_details(tmdb_id)
+    if not tmdb_data:
         await bot.send_message(callback_query.message.chat.id, "No se pudo obtener la información de la película. Por favor, inténtalo de nuevo.")
         await state.clear()
         return
         
-    movie_title = movie_data.get("title")
+    movie_title = tmdb_data.get("title")
     
     movie_info_db = get_movie_by_tmdb_id(tmdb_id)
     
     if movie_info_db:
         movie_link = movie_info_db.get("link")
         await delete_old_post(tmdb_id)
-        text, poster_url, post_keyboard = create_movie_message(movie_data, movie_link)
-        success, _ = await send_movie_post(TELEGRAM_CHANNEL_ID, movie_data, movie_link, post_keyboard)
+        text, poster_url, post_keyboard = create_movie_message(tmdb_data, movie_link)
+        success, _ = await send_movie_post(TELEGRAM_CHANNEL_ID, tmdb_data, movie_link, post_keyboard)
         
         if success:
             await bot.send_message(
@@ -1098,8 +1096,8 @@ async def handle_non_callback_message(message: types.Message):
 async def request_movie_by_id(callback_query: types.CallbackQuery, state: FSMContext):
     await bot.answer_callback_query(callback_query.id)
     tmdb_id = int(callback_query.data.split("_")[-1])
-    movie_data = get_movie_details(tmdb_id)
-    if not movie_data:
+    tmdb_data = get_movie_details(tmdb_id)
+    if not tmdb_data:
         await bot.send_message(callback_query.message.chat.id, "No se pudo obtener la información de la película. Por favor, inténtalo de nuevo.")
         await state.clear()
         return
@@ -1109,8 +1107,8 @@ async def request_movie_by_id(callback_query: types.CallbackQuery, state: FSMCon
     if movie_info_db:
         movie_link = movie_info_db.get("link")
         await delete_old_post(tmdb_id)
-        text, poster_url, post_keyboard = create_movie_message(movie_data, movie_link)
-        success, _ = await send_movie_post(TELEGRAM_CHANNEL_ID, movie_data, movie_link, post_keyboard)
+        text, poster_url, post_keyboard = create_movie_message(tmdb_data, movie_link)
+        success, _ = await send_movie_post(TELEGRAM_CHANNEL_ID, tmdb_data, movie_link, post_keyboard)
         
         if success:
             await bot.send_message(
@@ -1123,7 +1121,7 @@ async def request_movie_by_id(callback_query: types.CallbackQuery, state: FSMCon
         await state.clear()
         return
         
-    movie_title = movie_data.get("title")
+    movie_title = tmdb_data.get("title")
     keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
         [types.InlineKeyboardButton(text="📌 Publicar ahora esta película", callback_data=f"publish_now_from_trakt_{tmdb_id}")]
     ])
@@ -1163,9 +1161,9 @@ async def start_voting_command(message: types.Message, state: FSMContext):
     keyboard_buttons = []
     
     for movie_info in selected_movies:
-        movie_data = get_movie_details(movie_info.get("id"))
-        if movie_data and movie_data.get("poster_path"):
-            await bot.send_photo(message.chat.id, photo=f"{POSTER_BASE_URL}{movie_data.get('poster_path')}", caption=f"**{movie_data.get('title')}**")
+        tmdb_data = get_movie_details(movie_info.get("id"))
+        if tmdb_data and tmdb_data.get("poster_path"):
+            await bot.send_photo(message.chat.id, photo=f"{POSTER_BASE_URL}{tmdb_data.get('poster_path')}", caption=f"**{tmdb_data.get('title')}**")
         else:
             await bot.send_message(message.chat.id, text=f"**{movie_info.get('names').split(',')[0]}**")
         keyboard_buttons.append([types.InlineKeyboardButton(text=f"Votar por '{movie_info.get('names').split(',')[0]}'", callback_data=f"vote_{movie_info.get('id')}")])
@@ -1208,11 +1206,11 @@ async def end_voting_task(chat_id, state):
     
     if winning_movie_info and final_data["votes"][winning_movie_id] > 0:
         await bot.send_message(chat_id, f"🏆 ¡La película ganadora es **{winning_movie_info.get('names').split(',')[0]}** con {final_data['votes'][winning_movie_id]} votos! Publicando ahora...")
-        movie_data = get_movie_details(winning_movie_id)
-        if movie_data:
+        tmdb_data = get_movie_details(winning_movie_id)
+        if tmdb_data:
             await delete_old_post(winning_movie_id)
-            text, poster_url, post_keyboard = create_movie_message(movie_data, winning_movie_info.get("link"))
-            await send_movie_post(TELEGRAM_CHANNEL_ID, movie_data, winning_movie_info.get("link"), post_keyboard)
+            text, poster_url, post_keyboard = create_movie_message(tmdb_data, winning_movie_info.get("link"))
+            await send_movie_post(TELEGRAM_CHANNEL_ID, tmdb_data, winning_movie_info.get("link"), post_keyboard)
     else:
         await bot.send_message(chat_id, "La votación ha terminado sin votos. ¡Intenta de nuevo más tarde!")
 
@@ -1228,14 +1226,14 @@ async def auto_post_scheduler():
             if unposted_movies:
                 movie_info = random.choice(unposted_movies)
                 movie_id = movie_info.get("id")
-                movie_data = get_movie_details(movie_id)
-                if movie_data:
+                tmdb_data = get_movie_details(movie_id)
+                if tmdb_data:
                     logging.info("Hora de una nueva publicación automática.")
                     await delete_old_post(movie_id)
-                    text, poster_url, post_keyboard = create_movie_message(movie_data, movie_info.get("link"))
-                    success, _ = await send_movie_post(TELEGRAM_CHANNEL_ID, movie_data, movie_info.get("link"), post_keyboard)
+                    text, poster_url, post_keyboard = create_movie_message(tmdb_data, movie_info.get("link"))
+                    success, _ = await send_movie_post(TELEGRAM_CHANNEL_ID, tmdb_data, movie_info.get("link"), post_keyboard)
                     if success:
-                        logging.info(f"Publicación automática de '{movie_data.get('title')}' enviada con éxito.")
+                        logging.info(f"Publicación automática de '{tmdb_data.get('title')}' enviada con éxito.")
                     else:
                         logging.error("Error al enviar la publicación automática.")
                 else:
@@ -1254,13 +1252,13 @@ async def check_scheduled_posts():
                 async def publish_later(movie_info, delay):
                     await asyncio.sleep(delay * 60)
                     try:
-                        movie_data = get_movie_details(movie_info.get("id"))
-                        if movie_data:
+                        tmdb_data = get_movie_details(movie_info.get("id"))
+                        if tmdb_data:
                             await delete_old_post(movie_info.get("id"))
-                            text, poster_url, post_keyboard = create_movie_message(movie_data, movie_info.get("link"))
-                            success, _ = await send_movie_post(TELEGRAM_CHANNEL_ID, movie_data, movie_info.get("link"), post_keyboard)
+                            text, poster_url, post_keyboard = create_movie_message(tmdb_data, movie_info.get("link"))
+                            success, _ = await send_movie_post(TELEGRAM_CHANNEL_ID, tmdb_data, movie_info.get("link"), post_keyboard)
                             if success:
-                                logging.info(f"Publicación programada de '{movie_data.get('title')}' enviada con éxito.")
+                                logging.info(f"Publicación programada de '{tmdb_data.get('title')}' enviada con éxito.")
                             else:
                                 logging.error("Error al enviar la publicación programada.")
                     except Exception as e:
