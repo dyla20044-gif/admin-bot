@@ -93,25 +93,30 @@ def save_movie_to_db(movie_data):
         conn = connect_to_db()
         cursor = conn.cursor()
         
-        cursor.execute("SELECT id FROM movies WHERE id = %s", (movie_data.get("id"),))
+        # Asegúrate de que los valores no sean None antes de la consulta
+        movie_id = movie_data.get("id")
+        title = movie_data.get("title")
+        names = movie_data.get("names")
+        link = movie_data.get("link")
+        last_message_id = movie_data.get("last_message_id")
+        
+        cursor.execute("SELECT id FROM movies WHERE id = %s", (movie_id,))
         existing_id = cursor.fetchone()
         
         if existing_id:
             cursor.execute("""
                 UPDATE movies SET title=%s, names=%s, link=%s, last_message_id=%s WHERE id=%s
             """, (
-                movie_data.get("title"), movie_data.get("names"),
-                movie_data.get("link"), movie_data.get("last_message_id"), movie_data.get("id")
+                title, names, link, last_message_id, movie_id
             ))
-            logging.info(f"Película '{movie_data.get('title')}' actualizada en Supabase.")
+            logging.info(f"Película '{title}' actualizada en Supabase.")
         else:
             cursor.execute("""
                 INSERT INTO movies (id, title, names, link, last_message_id) VALUES (%s, %s, %s, %s, %s)
             """, (
-                movie_data.get("id"), movie_data.get("title"), movie_data.get("names"),
-                movie_data.get("link"), movie_data.get("last_message_id")
+                movie_id, title, names, link, last_message_id
             ))
-            logging.info(f"Nueva película '{movie_data.get('title')}' agregada a Supabase.")
+            logging.info(f"Nueva película '{title}' agregada a Supabase.")
         
         conn.commit()
     except (Exception, psycopg2.DatabaseError) as error:
@@ -145,14 +150,12 @@ def get_movie_by_tmdb_id(tmdb_id):
             conn.close()
     return movie
 
-# NUEVA FUNCIÓN para buscar por nombre
 def find_movie_in_db_by_name(title_to_find):
     conn = None
     movie = None
     try:
         conn = connect_to_db()
         cursor = conn.cursor()
-        # Se busca en la columna 'title' o 'names' de forma no estricta (LIKE)
         cursor.execute("SELECT id, title, names, link, last_message_id FROM movies WHERE lower(title) LIKE %s OR lower(names) LIKE %s", 
                        (f'%{title_to_find.lower()}%', f'%{title_to_find.lower()}%'))
         row = cursor.fetchone()
@@ -340,7 +343,7 @@ async def delete_old_post(movie_id_tmdb):
     movie_data = get_movie_by_tmdb_id(movie_id_tmdb)
     if movie_data:
         old_message_id = movie_data.get("last_message_id")
-        if old_message_id and str(old_message_id) != 'None':
+        if old_message_id is not None:
             try:
                 await bot.delete_message(chat_id=TELEGRAM_CHANNEL_ID, message_id=int(old_message_id))
                 logging.info(f"Mensaje anterior con ID {old_message_id} de '{movie_data.get('title')}' eliminado.")
@@ -442,7 +445,7 @@ async def send_catalog_page(chat_id, page):
     text = f"**Catálogo de Películas** (Página {page + 1}/{total_pages})\n\n"
     keyboard_buttons = []
     for data in page_movies:
-        title = data.get("names").split(",")[0] if "names" in data else "Título desconocido"
+        title = data.get("names").split(",")[0] if data.get("names") else "Título desconocido"
         tmdb_id = data.get("id")
         keyboard_buttons.append([types.InlineKeyboardButton(text=f"Publicar '{title}'", callback_data=f"publish_from_catalog_{tmdb_id}")])
     pagination_buttons = []
@@ -882,9 +885,9 @@ async def show_movies_by_genre(callback_query: types.CallbackQuery, page=1):
     if page > 1:
         keyboard_buttons.append(types.InlineKeyboardButton(text="⬅️ Anterior", callback_data=f"genre_page_{genre_id}_{page-1}"))
     if page < total_pages:
-        keyboard_buttons.append(types.InlineKeyboardButton(text="Siguiente ➡️", callback_data=f"genre_page_{genre_id}_{page+1}"))
+        pagination_buttons.append(types.InlineKeyboardButton(text="Siguiente ➡️", callback_data=f"genre_page_{genre_id}_{page+1}"))
         
-    keyboard_pag = types.InlineKeyboardMarkup(inline_keyboard=[keyboard_buttons])
+    keyboard_pag = types.InlineKeyboardMarkup(inline_keyboard=[pagination_buttons])
 
     await bot.send_message(callback_query.message.chat.id, f"**Aquí tienes algunas películas de {next((k for k, v in GENRES.items() if v == genre_id), 'este género')}:**", reply_markup=keyboard_pag, parse_mode=ParseMode.MARKDOWN)
 
