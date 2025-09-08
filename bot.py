@@ -83,7 +83,7 @@ class AdminStates(StatesGroup):
 class VotingStates(StatesGroup):
     waiting_for_votes = State()
 
-# --- Funciones para la base de datos de Supabase (REEMPLAZA TODAS LAS FUNCIONES DE GIST)
+# --- Funciones para la base de datos de Supabase
 def connect_to_db():
     return psycopg2.connect(DATABASE_URL)
 
@@ -152,7 +152,6 @@ def find_movie_in_db_by_name(title_to_find):
     try:
         conn = connect_to_db()
         cursor = conn.cursor()
-        # Se busca en la columna 'title' o 'names' de forma no estricta (LIKE)
         cursor.execute("SELECT id, title, names, link, last_message_id FROM movies WHERE lower(title) LIKE %s OR lower(names) LIKE %s", 
                        (f'%{title_to_find.lower()}%', f'%{title_to_find.lower()}%'))
         row = cursor.fetchone()
@@ -442,7 +441,7 @@ async def send_catalog_page(chat_id, page):
     text = f"**Catálogo de Películas** (Página {page + 1}/{total_pages})\n\n"
     keyboard_buttons = []
     for data in page_movies:
-        title = data.get("names").split(",")[0] if data.get("names") else "Título desconocido"
+        title = data.get("title") if data.get("title") else "Título desconocido"
         tmdb_id = data.get("id")
         keyboard_buttons.append([types.InlineKeyboardButton(text=f"Publicar '{title}'", callback_data=f"publish_from_catalog_{tmdb_id}")])
     pagination_buttons = []
@@ -482,7 +481,7 @@ async def find_movie_to_edit(message: types.Message, state: FSMContext):
         [types.InlineKeyboardButton(text="🔗 Editar Enlace", callback_data="edit_movie_link")],
         [types.InlineKeyboardButton(text="❌ Cancelar", callback_data="cancel_edit_movie")]
     ])
-    await message.reply(f"Seleccionaste la película: **{movie_to_edit['names'].split(',')[0]}**. ¿Qué quieres editar?", reply_markup=keyboard)
+    await message.reply(f"Seleccionaste la película: **{movie_to_edit.get('names', '').split(',')[0]}**. ¿Qué quieres editar?", reply_markup=keyboard)
     await state.set_state(AdminStates.waiting_for_edit_movie_info)
 
 @dp.callback_query(F.data.startswith("edit_movie_"))
@@ -532,7 +531,10 @@ async def process_edit_movie(message: types.Message, state: FSMContext):
 @dp.callback_query(F.data.startswith("catalog_page_"))
 async def navigate_catalog(callback_query: types.CallbackQuery):
     page = int(callback_query.data.split("_")[-1])
-    await bot.delete_message(chat_id=callback_query.message.chat.id, message_id=callback_query.message.message_id)
+    try:
+        await bot.delete_message(chat_id=callback_query.message.chat.id, message_id=callback_query.message.message_id)
+    except Exception as e:
+        logging.error(f"Error al borrar mensaje de catálogo: {e}")
     await send_catalog_page(callback_query.message.chat.id, page)
 
 @dp.callback_query(F.data.startswith("publish_from_catalog_"))
@@ -920,7 +922,10 @@ async def navigate_genre_page(callback_query: types.CallbackQuery):
     parts = callback_query.data.split('_')
     genre_id = int(parts[2])
     page = int(parts[3])
-    await bot.delete_message(chat_id=callback_query.message.chat.id, message_id=callback_query.message.message_id)
+    try:
+        await bot.delete_message(chat_id=callback_query.message.chat.id, message_id=callback_query.message.message_id)
+    except Exception as e:
+        logging.error(f"Error al borrar mensaje de catálogo: {e}")
     await show_movies_by_genre(callback_query, page=page)
 
 @dp.callback_query(F.data == "search_by_actor")
@@ -1286,7 +1291,7 @@ async def check_scheduled_posts():
         try:
             while not scheduled_posts.empty():
                 movie_info, delay = scheduled_posts.get_nowait()
-                logging.info(f"Programando publicación para '{movie_info.get('names').split(',')[0]}' en {delay} minutos.")
+                logging.info(f"Programando publicación para '{movie_info.get('names', '').split(',')[0]}' en {delay} minutos.")
                 async def publish_later(movie_info, delay):
                     await asyncio.sleep(delay * 60)
                     try:
