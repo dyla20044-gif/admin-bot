@@ -14,8 +14,8 @@ from aiogram.filters import Command
 from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import Update
 from aiohttp import web
+from aiogram.types import Update
 
 # --- VARIABLES DE ENTORNO ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -171,7 +171,7 @@ async def delete_movie_from_db(movie_id):
         logging.error(f"Error al eliminar la película de MongoDB: {e}")
 
 
-# --- Funciones de TMDB (aiohttp - Asíncrono) ---
+# --- Funciones de TMDB y Trakt (aiohttp - Asíncrono) ---
 
 async def get_movie_results_by_title(title):
     url = f"{BASE_TMDB_URL}/search/movie"
@@ -265,6 +265,7 @@ async def get_movies_by_actor(actor_name):
         logging.error(f"Error al buscar películas por actor: {e}")
         return []
 
+# --- NUEVA FUNCIÓN ASÍNCRONA PARA BUSCAR EN TRAKT ---
 async def trakt_api_search_movie(title):
     headers = {
         "Content-Type": "application/json",
@@ -596,14 +597,20 @@ async def add_movie_info(message: types.Message, state: FSMContext):
     
     movie_results = await get_movie_results_by_title(main_title)
     found_movie_id = None
-    for movie in movie_results:
-        if movie.get("release_date") and movie.get("release_date").startswith(year):
-            found_movie_id = movie.get("id")
-            break
+    if not movie_results:
+        # --- NUEVA LÓGICA DE BÚSQUEDA EN TRAKT COMO PLAN B ---
+        trakt_id = await trakt_api_search_movie(main_title)
+        if trakt_id:
+            found_movie_id = trakt_id
+    else:
+        for movie in movie_results:
+            if movie.get("release_date") and movie.get("release_date").startswith(year):
+                found_movie_id = movie.get("id")
+                break
     
     if not found_movie_id:
         await message.reply(
-            f"No se pudo encontrar la película '{main_title}' del año {year} en TMDB. "
+            f"No se pudo encontrar la película '{main_title}' del año {year} en TMDB o Trakt. "
             "Por favor, asegúrate de escribir el título y el año correctamente. Inténtalo de nuevo."
         )
         return
@@ -613,7 +620,6 @@ async def add_movie_info(message: types.Message, state: FSMContext):
         await message.reply("Ocurrió un error al obtener los detalles de la película desde TMDB.")
         return
 
-    # --- CORRECCIÓN IMPLEMENTADA AQUÍ ---
     names_for_db = ", ".join(names)
     
     movie_data = {
@@ -1025,48 +1031,59 @@ async def process_movie_request(message: types.Message, state: FSMContext):
     else:
         movie_results = await get_movie_results_by_title(movie_title)
         
+    found_movie_id = None
     if not movie_results:
+        # --- NUEVA LÓGICA DE BÚSQUEDA EN TRAKT COMO PLAN B ---
+        trakt_id = await trakt_api_search_movie(movie_title)
+        if trakt_id:
+            found_movie_id = trakt_id
+    else:
+        for movie in movie_results:
+            if movie.get("release_date") and movie.get("release_date").startswith(year if year_match else ''):
+                found_movie_id = movie.get("id")
+                break
+
+    if not found_movie_id:
         await message.reply(f"No se encontraron películas con el título '{movie_title}'. Por favor, intenta de nuevo con otro nombre o revisa la ortografía.")
         await state.clear()
         return
 
+    tmdb_data = await get_movie_details(found_movie_id)
+    if not tmdb_data:
+        await message.reply("Ocurrió un error al obtener los detalles de la película desde TMDB.")
+        return
+
     user_requests[message.from_user.id] = {
-        "results": movie_results[:5],
+        "results": [tmdb_data], # Solo mostramos el resultado encontrado
         "query": movie_title,
         "message_ids": []
     }
     
-    await message.reply("Encontré varias coincidencias. Por favor, elige la película correcta de la lista:")
+    await message.reply("Encontré una coincidencia. ¿Es esta la película que buscabas?")
     
-    for movie in movie_results[:5]:
-        tmdb_id = movie.get("id")
-        tmdb_data = await get_movie_details(tmdb_id)
-        if not tmdb_data:
-            continue
-        
-        text, poster_url, _ = create_movie_message(tmdb_data)
-        
-        movie_in_db = await get_movie_by_tmdb_id(tmdb_id)
-        
-        if movie_in_db:
-            keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-                [types.InlineKeyboardButton(text="🎬 Publicar ahora", callback_data=f"publish_now_manual_{tmdb_id}")]
-            ])
+    text, poster_url, _ = create_movie_message(tmdb_data)
+    
+    movie_in_db = await get_movie_by_tmdb_id(found_movie_id)
+    
+    if movie_in_db:
+        keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+            [types.InlineKeyboardButton(text="🎬 Publicar ahora", callback_data=f"publish_now_manual_{found_movie_id}")]
+        ])
+    else:
+        keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+            [types.InlineKeyboardButton(text="🎬 Pedir esta película", callback_data=f"request_movie_by_id_{found_movie_id}")]
+        ])
+    
+    try:
+        if poster_url:
+            sent_message = await bot.send_photo(chat_id=message.chat.id, photo=poster_url, caption=text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
         else:
-            keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-                [types.InlineKeyboardButton(text="🎬 Pedir esta película", callback_data=f"request_movie_by_id_{tmdb_id}")]
-            ])
+            sent_message = await bot.send_message(chat_id=message.chat.id, text=text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
         
-        try:
-            if poster_url:
-                sent_message = await bot.send_photo(chat_id=message.chat.id, photo=poster_url, caption=text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
-            else:
-                sent_message = await bot.send_message(chat_id=message.chat.id, text=text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
-            
-            user_requests[message.from_user.id]["message_ids"].append(sent_message.message_id)
+        user_requests[message.from_user.id]["message_ids"].append(sent_message.message_id)
 
-        except Exception as e:
-            logging.error(f"Error al enviar la opción de película: {e}")
+    except Exception as e:
+        logging.error(f"Error al enviar la opción de película: {e}")
             
     await state.set_state(MovieRequestStates.waiting_for_confirmation)
 
