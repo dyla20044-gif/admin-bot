@@ -756,7 +756,7 @@ async def show_estrenos_by_text(message: types.Message):
         await message.reply("No se encontraron estrenos recientes en este momento.")
         return
     
-    await message.reply("**🎞️ ¡Últimos estrenos!**\n\nAquí tienes las películas más recientes que se han estrenado.\n", parse_mode=ParseMode.MARKDOWN)
+    await message.reply(f"**🎞️ ¡Últimos estrenos!**\n\nAquí tienes las películas más recientes que se han estrenado.\n", parse_mode=ParseMode.MARKDOWN)
     
     for movie in upcoming_movies[:5]:
         tmdb_id = movie.get("id")
@@ -1136,7 +1136,7 @@ async def request_movie_by_id(callback_query: types.CallbackQuery, state: FSMCon
         reply_markup=keyboard
     )
     
-    await bot.send_message(callback_query.message.chat.id, f"Tu solicitud ha sido enviada al administrador.")
+    await bot.send_message(callback_query.message.chat.id, f"Tu solicitud ha sido enviada al administrador. ¡Pronto estará lista!")
     await state.clear()
 
 
