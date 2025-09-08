@@ -108,18 +108,10 @@ def load_movies_db():
 def save_movies_db(movie_data):
     global movies_db
     try:
-        load_movies_db()
+        # Aquí se modifica el diccionario en memoria directamente
+        # para luego guardarlo. Esto evita problemas de concurrencia.
+        movies_db[movie_data.get("title")] = movie_data
         movies_list = list(movies_db.values())
-        
-        found = False
-        for i, movie in enumerate(movies_list):
-            if movie.get("id") == movie_data.get("id"):
-                movies_list[i] = movie_data
-                found = True
-                break
-        
-        if not found:
-            movies_list.append(movie_data)
         
         # Corrección clave: Asegurarse de que el last_message_id sea un número o None antes de guardar
         for movie in movies_list:
@@ -129,7 +121,6 @@ def save_movies_db(movie_data):
         new_content = json.dumps({"movies": movies_list}, indent=2, ensure_ascii=False)
         gist.edit(files={list(gist.files.keys())[0]: {"content": new_content}})
         
-        movies_db = {d.get("title"): d for d in movies_list}
         logging.info(f"Base de datos de películas actualizada en GitHub Gist.")
     except Exception as e:
         logging.error(f"Error al guardar la película en GitHub Gist: {e}")
@@ -586,9 +577,19 @@ async def add_movie_info(message: types.Message, state: FSMContext):
         "names": ", ".join(names),
         "id": found_movie_id,
         "link": movie_link,
-        "last_message_id": ""
+        "last_message_id": None # Corregido para que se guarde como None
     }
+    
     save_movies_db(movie_data)
+    
+    # Después de guardar, verifica si la película está en la base de datos local
+    # y luego procede a ofrecer las opciones.
+    movie_in_db = get_movie_by_tmdb_id(found_movie_id)
+    if not movie_in_db:
+        await message.reply("❌ Ocurrió un error al intentar guardar la película. Por favor, revisa los logs de Render.")
+        await state.clear()
+        return
+
     await state.clear()
     keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
         [types.InlineKeyboardButton(text="➕ Agregar otra película", callback_data="add_movie_again")],
@@ -596,6 +597,7 @@ async def add_movie_info(message: types.Message, state: FSMContext):
         [types.InlineKeyboardButton(text="⏰ Programar publicación", callback_data=f"schedule_movie_{found_movie_id}")]
     ])
     await message.reply("✅ Tu película fue agregada correctamente. ¿Qué quieres hacer ahora?", reply_markup=keyboard)
+
 
 @dp.callback_query(F.data == "add_movie_again")
 async def add_movie_again_callback(callback_query: types.CallbackQuery, state: FSMContext):
@@ -1069,22 +1071,24 @@ async def confirm_movie_request(callback_query: types.CallbackQuery, state: FSMC
             )
         else:
             await bot.send_message(callback_query.message.chat.id, "Ocurrió un error al intentar publicar la película. Por favor, contacta al administrador.")
-    else:
-        keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-            [types.InlineKeyboardButton(text="📌 Publicar ahora esta película", callback_data=f"publish_now_from_trakt_{tmdb_id}")]
-        ])
+        await state.clear()
+        return
         
-        await bot.send_message(
-            ADMIN_ID,
-            f"El usuario {callback_query.from_user.full_name} (@{callback_query.from_user.username}) ha solicitado la película: <b>{movie_title}</b>\n\n"
-            f"ℹ️ **Se encontró en TMDB con ID:** `{tmdb_id}`",
-            parse_mode=ParseMode.HTML,
-            reply_markup=keyboard
-        )
-        
-        await bot.send_message(callback_query.message.chat.id, "Tu solicitud ha sido enviada al administrador. ¡Pronto estará lista!")
+    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+        [types.InlineKeyboardButton(text="📌 Publicar ahora esta película", callback_data=f"publish_now_from_trakt_{tmdb_id}")]
+    ])
     
+    await bot.send_message(
+        ADMIN_ID,
+        f"El usuario {callback_query.from_user.full_name} (@{callback_query.from_user.username}) ha solicitado la película: <b>{movie_title}</b>\n\n"
+        f"ℹ️ **Se encontró en TMDB con ID:** `{tmdb_id}`",
+        parse_mode=ParseMode.HTML,
+        reply_markup=keyboard
+    )
+    
+    await bot.send_message(callback_query.message.chat.id, f"Tu solicitud ha sido enviada al administrador. ¡Pronto estará lista!")
     await state.clear()
+
 
 @dp.message(MovieRequestStates.waiting_for_confirmation)
 async def handle_non_callback_message(message: types.Message):
@@ -1259,6 +1263,8 @@ async def check_scheduled_posts():
                                 logging.info(f"Publicación programada de '{movie_data.get('title')}' enviada con éxito.")
                             else:
                                 logging.error("Error al enviar la publicación programada.")
+                        else:
+                            logging.error(f"Error: No se pudo obtener la información de la película para la publicación programada.")
                     except Exception as e:
                         logging.error(f"Error en la tarea de publicación programada: {e}")
                 asyncio.create_task(publish_later(movie_info, delay))
