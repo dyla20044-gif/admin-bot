@@ -413,6 +413,62 @@ async def delete_spam_message(message: types.Message):
     except Exception as e:
         logging.error(f"No se pudo eliminar el mensaje de spam: {e}")
 
+# --- CAMBIO IMPORTANTE EN /start ---
+@dp.message(Command("start"))
+async def start_command(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    
+    # Limpiar el estado de FSM para evitar que el bot se confunda
+    await state.clear()
+    
+    # --- CAMBIO: Lógica para admins vs usuarios ---
+    if str(user_id) == ADMIN_ID:
+        keyboard = types.ReplyKeyboardMarkup(
+            keyboard=[
+                [types.KeyboardButton(text="➕ Agregar película"), types.KeyboardButton(text="📋 Ver catálogo")],
+                [types.KeyboardButton(text="⚙️ Configuración auto-publicación"), types.KeyboardButton(text="🗳️ Iniciar votación")]
+            ],
+            resize_keyboard=True
+        )
+        sent_message = await message.reply(
+            "¡Hola, Administrador! Elige una opción:",
+            reply_markup=keyboard,
+        )
+        # Los admins no tienen limpieza de chat para mantener el historial
+        user_message_ids[user_id] = [sent_message.message_id]
+
+    else: # Lógica para usuarios normales
+        # Limpiar el historial para el usuario
+        if user_id in user_message_ids:
+            for msg_id in user_message_ids[user_id]:
+                try:
+                    await bot.delete_message(chat_id=chat_id, message_id=msg_id)
+                except Exception:
+                    pass
+        user_message_ids[user_id] = []
+        
+        user_keyboard = types.ReplyKeyboardMarkup(
+            keyboard=[
+                [types.KeyboardButton(text="🔍 Buscar película"), types.KeyboardButton(text="✨ Recomiéndame")],
+                [types.KeyboardButton(text="🎞️ Estrenos"), types.KeyboardButton(text="📰 Noticias")]
+            ],
+            resize_keyboard=True
+        )
+        
+        caption = "¡Hola! Soy un bot que te ayuda a encontrar tus películas favoritas. ¡Usa el menú de abajo para empezar!"
+        
+        sent_message = await bot.send_photo(
+            chat_id=message.chat.id,
+            photo=WELCOME_IMAGE_URL,
+            caption=caption,
+            reply_markup=user_keyboard,
+            parse_mode=ParseMode.MARKDOWN
+        )
+        # Guarda el ID del nuevo mensaje para futura eliminación
+        user_message_ids[user_id].append(sent_message.message_id)
+
+
 @dp.message(F.text == "➕ Agregar película")
 async def add_movie_start_by_text(message: types.Message, state: FSMContext):
     if str(message.from_user.id) != ADMIN_ID:
@@ -669,7 +725,6 @@ async def publish_now_manual_callback(callback_query: types.CallbackQuery):
     if not movie_info:
         await bot.answer_callback_query(callback_query.id, "Error: película no encontrada en la base de datos.", show_alert=True)
         return
-    
     tmdb_data = await get_movie_details(movie_id)
     if not tmdb_data:
         await bot.answer_callback_query(callback_query.id, "No se pudo obtener la información de la película. No se puede publicar.", show_alert=True)
@@ -898,7 +953,7 @@ async def send_latest_news_handler(message: types.Message):
                     parse_mode=ParseMode.HTML,
                     disable_web_page_preview=True
                 )
-            except Exception as e: # Manejo del error de imagen no válida
+            except Exception as e:
                 logging.error(f"Error al enviar la foto de noticia: {e}")
                 await bot.send_message(
                     chat_id=message.chat.id,
@@ -944,7 +999,6 @@ async def show_movies_by_genre(callback_query: types.CallbackQuery, page=1):
 
     for movie in movies[:5]:
         tmdb_id = movie.get("id")
-        # Manejo de error para 404 en TMDB
         tmdb_data = await get_movie_details(tmdb_id)
         if not tmdb_data:
             continue
@@ -1032,17 +1086,18 @@ async def process_search_query(message: types.Message, state: FSMContext):
     
     await message.reply(f"Buscando '{search_query}'...")
     
-    # Lógica para la búsqueda de películas
-    if search_type == 'name':
-        movie_results = await get_movie_results_by_title(search_query)
+    movie_results = []
+    if search_type == 'name' or search_type == 'request':
+        year_match = re.search(r'\((19|20)\d{2}\)', search_query)
+        if year_match:
+            year = year_match.group(0).replace('(', '').replace(')', '')
+            title_only = search_query.replace(year_match.group(0), '').strip()
+            movie_results = await get_movie_results_by_title(title_only)
+        else:
+            movie_results = await get_movie_results_by_title(search_query)
+            
     elif search_type == 'actor':
         movie_results = await get_movies_by_actor(search_query)
-    elif search_type == 'request':
-        movie_results = await get_movie_results_by_title(search_query)
-    else:
-        await message.reply("Tipo de búsqueda no válido. Por favor, reinicia con /start.")
-        await state.clear()
-        return
 
     if not movie_results:
         await message.reply(f"No se encontraron resultados para '{search_query}'. Por favor, intenta con otra búsqueda o usa /cancelar para salir.")
@@ -1051,7 +1106,8 @@ async def process_search_query(message: types.Message, state: FSMContext):
     await message.reply(f"Resultados para '{search_query}':")
     
     keyboard_buttons = []
-    
+    sent_message_ids = []
+
     for movie in movie_results[:SEARCH_RESULTS_PER_PAGE]:
         tmdb_id = movie.get("id")
         tmdb_data = await get_movie_details(tmdb_id)
@@ -1146,7 +1202,6 @@ async def confirm_movie_request(callback_query: types.CallbackQuery, state: FSMC
     await bot.answer_callback_query(callback_query.id)
     
     tmdb_id = int(callback_query.data.split("_")[-1])
-    # Manejo de error para 404 en TMDB
     tmdb_data = await get_movie_details(tmdb_id)
     if not tmdb_data:
         await bot.send_message(callback_query.message.chat.id, "No se pudo obtener la información de la película. Por favor, inténtalo de nuevo.")
@@ -1432,7 +1487,7 @@ async def start_webhook_server():
     site = web.TCPSite(runner, '0.0.0.0', int(os.environ.get('PORT', 8080)))
     await site.start()
 
-# --- MAIN EXECUTION
+# MAIN EXECUTION
 async def main():
     
     auto_post_task = asyncio.create_task(auto_post_scheduler())
