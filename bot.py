@@ -83,7 +83,7 @@ class AdminStates(StatesGroup):
 class VotingStates(StatesGroup):
     waiting_for_votes = State()
 
-# --- Funciones para la base de datos de Supabase
+# --- Funciones para la base de datos de Supabase (REEMPLAZA TODAS LAS FUNCIONES DE GIST)
 def connect_to_db():
     return psycopg2.connect(DATABASE_URL)
 
@@ -93,12 +93,12 @@ def save_movie_to_db(movie_data):
         conn = connect_to_db()
         cursor = conn.cursor()
         
-        cursor.execute("SELECT id FROM cine WHERE id = %s", (movie_data.get("id"),))
+        cursor.execute("SELECT id FROM movies WHERE id = %s", (movie_data.get("id"),))
         existing_id = cursor.fetchone()
         
         if existing_id:
             cursor.execute("""
-                UPDATE cine SET title=%s, names=%s, link=%s, last_message_id=%s WHERE id=%s
+                UPDATE movies SET title=%s, names=%s, link=%s, last_message_id=%s WHERE id=%s
             """, (
                 movie_data.get("title"), movie_data.get("names"),
                 movie_data.get("link"), movie_data.get("last_message_id"), movie_data.get("id")
@@ -106,7 +106,7 @@ def save_movie_to_db(movie_data):
             logging.info(f"Película '{movie_data.get('title')}' actualizada en Supabase.")
         else:
             cursor.execute("""
-                INSERT INTO cine (id, title, names, link, last_message_id) VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO movies (id, title, names, link, last_message_id) VALUES (%s, %s, %s, %s, %s)
             """, (
                 movie_data.get("id"), movie_data.get("title"), movie_data.get("names"),
                 movie_data.get("link"), movie_data.get("last_message_id")
@@ -127,7 +127,7 @@ def get_movie_by_tmdb_id(tmdb_id):
     try:
         conn = connect_to_db()
         cursor = conn.cursor()
-        cursor.execute("SELECT id, title, names, link, last_message_id FROM cine WHERE id = %s", (tmdb_id,))
+        cursor.execute("SELECT id, title, names, link, last_message_id FROM movies WHERE id = %s", (tmdb_id,))
         row = cursor.fetchone()
         if row:
             movie = {
@@ -153,7 +153,7 @@ def find_movie_in_db_by_name(title_to_find):
         conn = connect_to_db()
         cursor = conn.cursor()
         # Se busca en la columna 'title' o 'names' de forma no estricta (LIKE)
-        cursor.execute("SELECT id, title, names, link, last_message_id FROM cine WHERE lower(title) LIKE %s OR lower(names) LIKE %s", 
+        cursor.execute("SELECT id, title, names, link, last_message_id FROM movies WHERE lower(title) LIKE %s OR lower(names) LIKE %s", 
                        (f'%{title_to_find.lower()}%', f'%{title_to_find.lower()}%'))
         row = cursor.fetchone()
         if row:
@@ -178,7 +178,7 @@ def get_all_movies():
     try:
         conn = connect_to_db()
         cursor = conn.cursor()
-        cursor.execute("SELECT id, title, names, link, last_message_id FROM cine")
+        cursor.execute("SELECT id, title, names, link, last_message_id FROM movies")
         rows = cursor.fetchall()
         for row in rows:
             movies_list.append({
@@ -1181,7 +1181,7 @@ async def start_voting_command(message: types.Message, state: FSMContext):
     if str(message.from_user.id) != ADMIN_ID:
         await message.reply("No tienes permiso para esta acción.")
         return
-    unposted_movies = [m for m in get_all_movies() if str(m.get("last_message_id")) == 'None' or m.get("last_message_id") == '']
+    unposted_movies = [v for v in get_all_movies() if str(v.get("last_message_id")) == 'None' or v.get("last_message_id") == '']
     if len(unposted_movies) < 3:
         await message.reply("No hay suficientes películas nuevas para iniciar una votación. Agrega al menos 3 películas.")
         return
