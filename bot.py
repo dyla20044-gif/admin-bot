@@ -3,10 +3,10 @@ import logging
 import re
 import os
 import requests
-import psycopg2
 from collections import deque
 import datetime
 import random
+import pymongo # <-- Nueva importación para MongoDB
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.enums import ParseMode
@@ -83,123 +83,92 @@ class AdminStates(StatesGroup):
 class VotingStates(StatesGroup):
     waiting_for_votes = State()
 
-# --- Funciones para la base de datos de Supabase
-def connect_to_db():
-    return psycopg2.connect(DATABASE_URL)
+# --- Funciones para la base de datos de MongoDB ---
+def get_mongo_db_collection():
+    try:
+        connection_string = os.getenv("DATABASE_URL")
+        if not connection_string:
+            logging.error("DATABASE_URL no está configurada. No se puede conectar a la base de datos.")
+            return None
+
+        client = pymongo.MongoClient(connection_string)
+        db = client["movies_database"]  # Puedes cambiar el nombre de la base de datos
+        collection = db["movies_collection"] # Puedes cambiar el nombre de la colección
+        return collection
+    except Exception as e:
+        logging.error(f"Error al conectar con MongoDB: {e}")
+        return None
 
 def save_movie_to_db(movie_data):
-    conn = None
+    collection = get_mongo_db_collection()
+    if collection is None:
+        return
+
     try:
-        conn = connect_to_db()
-        cursor = conn.cursor()
-        
-        cursor.execute("SELECT id FROM movies WHERE id = %s", (movie_data.get("id"),))
-        existing_id = cursor.fetchone()
-        
         movie_id = movie_data.get("id")
-        title = movie_data.get("title")
-        names = movie_data.get("names")
-        link = movie_data.get("link")
-        last_message_id = movie_data.get("last_message_id")
         
-        if existing_id:
-            cursor.execute("""
-                UPDATE movies SET title=%s, names=%s, link=%s, last_message_id=%s WHERE id=%s
-            """, (
-                title, names, link, last_message_id, movie_id
-            ))
-            logging.info(f"Película '{title}' actualizada en Supabase.")
-        else:
-            cursor.execute("""
-                INSERT INTO movies (id, title, names, link, last_message_id) VALUES (%s, %s, %s, %s, %s)
-            """, (
-                movie_id, title, names, link, last_message_id
-            ))
-            logging.info(f"Nueva película '{title}' agregada a Supabase.")
-        
-        conn.commit()
-    except (Exception, psycopg2.DatabaseError) as error:
-        logging.error(f"Error al guardar la película en Supabase: {error}")
-    finally:
-        if conn:
-            cursor.close()
-            conn.close()
+        # En MongoDB, actualizamos si existe o insertamos si no (upsert)
+        collection.update_one(
+            {"id": movie_id},
+            {"$set": movie_data},
+            upsert=True
+        )
+        logging.info(f"Película '{movie_data.get('title')}' guardada/actualizada en MongoDB.")
+    except Exception as e:
+        logging.error(f"Error al guardar la película en MongoDB: {e}")
 
 def get_movie_by_tmdb_id(tmdb_id):
-    conn = None
-    movie = None
-    try:
-        conn = connect_to_db()
-        cursor = conn.cursor()
-        cursor.execute("SELECT id, title, names, link, last_message_id FROM movies WHERE id = %s", (tmdb_id,))
-        row = cursor.fetchone()
-        if row:
-            movie = {
-                "id": row[0],
-                "title": row[1],
-                "names": row[2],
-                "link": row[3],
-                "last_message_id": row[4]
-            }
-    except (Exception, psycopg2.DatabaseError) as error:
-        logging.error(f"Error al obtener la película de Supabase: {error}")
-    finally:
-        if conn:
-            cursor.close()
-            conn.close()
-    return movie
+    collection = get_mongo_db_collection()
+    if collection is None:
+        return None
 
-# NUEVA FUNCIÓN para buscar por nombre
-def find_movie_in_db_by_name(title_to_find):
-    conn = None
-    movie = None
     try:
-        conn = connect_to_db()
-        cursor = conn.cursor()
-        # Se busca en la columna 'title' o 'names' de forma no estricta (LIKE)
-        cursor.execute("SELECT id, title, names, link, last_message_id FROM movies WHERE lower(title) LIKE %s OR lower(names) LIKE %s", 
-                         (f'%{title_to_find.lower()}%', f'%{title_to_find.lower()}%'))
-        row = cursor.fetchone()
-        if row:
-            movie = {
-                "id": row[0],
-                "title": row[1],
-                "names": row[2],
-                "link": row[3],
-                "last_message_id": row[4]
-            }
-    except (Exception, psycopg2.DatabaseError) as error:
-        logging.error(f"Error al buscar película por nombre en Supabase: {error}")
-    finally:
-        if conn:
-            cursor.close()
-            conn.close()
-    return movie
+        movie_document = collection.find_one({"id": tmdb_id})
+        return movie_document
+    except Exception as e:
+        logging.error(f"Error al obtener la película de MongoDB: {e}")
+        return None
+
+def find_movie_in_db_by_name(title_to_find):
+    collection = get_mongo_db_collection()
+    if collection is None:
+        return None
+
+    try:
+        movie_document = collection.find_one({
+            "$or": [
+                {"title": {"$regex": title_to_find, "$options": "i"}},
+                {"names": {"$regex": title_to_find, "$options": "i"}}
+            ]
+        })
+        return movie_document
+    except Exception as e:
+        logging.error(f"Error al buscar película por nombre en MongoDB: {e}")
+        return None
 
 def get_all_movies():
-    conn = None
-    movies_list = []
+    collection = get_mongo_db_collection()
+    if collection is None:
+        return []
+    
     try:
-        conn = connect_to_db()
-        cursor = conn.cursor()
-        cursor.execute("SELECT id, title, names, link, last_message_id FROM movies")
-        rows = cursor.fetchall()
-        for row in rows:
-            movies_list.append({
-                "id": row[0],
-                "title": row[1],
-                "names": row[2],
-                "link": row[3],
-                "last_message_id": row[4]
-            })
-    except (Exception, psycopg2.DatabaseError) as error:
-        logging.error(f"Error al obtener todas las películas de Supabase: {error}")
-    finally:
-        if conn:
-            cursor.close()
-            conn.close()
-    return movies_list
+        movies_list = list(collection.find({}))
+        return movies_list
+    except Exception as e:
+        logging.error(f"Error al obtener todas las películas de MongoDB: {e}")
+        return []
 
+def delete_movie_from_db(movie_id):
+    collection = get_mongo_db_collection()
+    if collection is None:
+        return
+
+    try:
+        collection.delete_one({"id": movie_id})
+        logging.info(f"Película con ID {movie_id} eliminada de MongoDB.")
+    except Exception as e:
+        logging.error(f"Error al eliminar la película de MongoDB: {e}")
+        
 # --- Auxiliary functions for the TMDB API
 def get_movie_results_by_title(title):
     url = f"{BASE_TMDB_URL}/search/movie"
