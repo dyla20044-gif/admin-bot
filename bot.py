@@ -109,8 +109,7 @@ def load_movies_db():
 def save_movies_db(movie_data):
     global movies_db
     try:
-        # Carga siempre la última versión para evitar conflictos
-        load_movies_db()
+        # Se ELIMINA el llamado a load_movies_db() aquí
         
         movie_id = movie_data.get("id")
         if not movie_id:
@@ -511,13 +510,13 @@ async def publish_from_catalog(callback_query: types.CallbackQuery):
     if not movie_info:
         await bot.answer_callback_query(callback_query.id, "Error: película no encontrada en la base de datos.", show_alert=True)
         return
-    movie_data = get_movie_details(movie_id)
-    if not movie_data:
+    tmdb_data = get_movie_details(movie_id)
+    if not tmdb_data:
         await bot.answer_callback_query(callback_query.id, "No se pudo obtener la información de la película. No se puede publicar.", show_alert=True)
         return
     await delete_old_post(movie_id)
-    text, poster_url, post_keyboard = create_movie_message(movie_data, movie_info.get("link"))
-    success, _ = await send_movie_post(TELEGRAM_CHANNEL_ID, movie_data, movie_info.get("link"), post_keyboard)
+    text, poster_url, post_keyboard = create_movie_message(tmdb_data, movie_info.get("link"))
+    success, _ = await send_movie_post(TELEGRAM_CHANNEL_ID, tmdb_data, movie_info.get("link"), post_keyboard)
     if success:
         await bot.answer_callback_query(callback_query.id, "✅ Película publicada con éxito.", show_alert=True)
     else:
