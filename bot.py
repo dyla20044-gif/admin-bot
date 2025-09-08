@@ -626,14 +626,13 @@ async def add_movie_info(message: types.Message, state: FSMContext):
         await message.reply("Ocurrió un error al obtener los detalles de la película desde TMDB.")
         return
 
-    # --- La corrección está en la siguiente línea ---
-    # Se convierte la lista 'names' a una cadena de texto para la base de datos
+    # --- CORRECCIÓN IMPLEMENTADA AQUÍ ---
     names_for_db = ", ".join(names)
     
     movie_data = {
         "id": tmdb_data.get("id"),
         "title": tmdb_data.get("title"),
-        "names": names_for_db, # <-- El valor ahora es una cadena de texto
+        "names": names_for_db,
         "link": movie_link,
         "last_message_id": None
     }
