@@ -1,5 +1,5 @@
 aiogram
 requests
-PyGithub
+psycopg2-binary
 Flask
 aiohttp
