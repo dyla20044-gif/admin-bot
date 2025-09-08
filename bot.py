@@ -16,6 +16,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiohttp import web
 from aiogram.types import Update
+from bs4 import BeautifulSoup
+import lxml
 
 # --- VARIABLES DE ENTORNO ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -24,6 +26,7 @@ TRAKT_CLIENT_ID = os.getenv("TRAKT_CLIENT_ID")
 TRAKT_CLIENT_SECRET = os.getenv("TRAKT_CLIENT_SECRET")
 ADMIN_ID = os.getenv("ADMIN_ID")
 DATABASE_URL = os.getenv("DATABASE_URL")
+NEWS_API_KEY = os.getenv("NEWS_API_KEY") # Nueva variable
 # ----------------------------------------
 
 # Channel ID
@@ -39,13 +42,6 @@ recent_posts = deque(maxlen=20)
 # Temporary storage for user requests and admin data
 user_requests = {}
 admin_data = {}
-memes = [
-    {"photo_url": "https://i.imgflip.com/64s72q.jpg", "caption": "Cuando te dicen que hay una película nueva... y es la que no querías."},
-    {"photo_url": "https://i.imgflip.com/71j22e.jpg", "caption": "Yo esperando la película que pedí en el canal..."},
-    {"photo_url": "https://i.imgflip.com/83p14j.jpg", "caption": "Mi reacción cuando el bot me dice que la película ya está en el catálogo."},
-    {"photo_url": "https://i.imgflip.com/4q3e3i.jpg", "caption": "Cuando me entero que la película que quiero ya está disponible en alta calidad."},
-    {"photo_url": "https://i.imgflip.com/776k1w.jpg", "caption": "Yo después de ver 3 películas seguidas en un día."}
-]
 
 # Géneros de TMDB
 GENRES = {
@@ -265,7 +261,6 @@ async def get_movies_by_actor(actor_name):
         logging.error(f"Error al buscar películas por actor: {e}")
         return []
 
-# --- NUEVA FUNCIÓN ASÍNCRONA PARA BUSCAR EN TRAKT ---
 async def trakt_api_search_movie(title):
     headers = {
         "Content-Type": "application/json",
@@ -288,6 +283,48 @@ async def trakt_api_search_movie(title):
     except aiohttp.ClientError as e:
         logging.error(f"Error al buscar película en Trakt.tv: {e}")
         return None
+
+# --- NUEVAS FUNCIONES PARA NOTICIAS Y MEMES ---
+async def get_latest_news():
+    url = "https://newsapi.org/v2/everything"
+    params = {
+        "q": "cine",
+        "sortBy": "publishedAt",
+        "language": "es",
+        "apiKey": NEWS_API_KEY,
+        "pageSize": 5,
+    }
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, params=params) as response:
+                response.raise_for_status()
+                data = await response.json()
+                return data.get("articles", [])
+    except aiohttp.ClientError as e:
+        logging.error(f"Error al obtener noticias de NewsAPI: {e}")
+        return []
+
+async def get_random_meme():
+    url = "https://www.reddit.com/r/memesenespanol/.json?limit=50"
+    headers = {"User-Agent": "MyBot/0.1"} # Necesario para Reddit
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers) as response:
+                response.raise_for_status()
+                data = await response.json()
+                posts = data['data']['children']
+                # Filtra solo los posts con imágenes
+                image_posts = [p for p in posts if p['data'].get('url_overridden_by_dest') and p['data']['url_overridden_by_dest'].endswith(('.jpg', '.png'))]
+                if image_posts:
+                    random_post = random.choice(image_posts)
+                    meme_url = random_post['data']['url_overridden_by_dest']
+                    meme_caption = random_post['data']['title']
+                    return meme_url, meme_caption
+    except aiohttp.ClientError as e:
+        logging.error(f"Error al hacer scraping de memes: {e}")
+    except KeyError:
+        logging.error("Error al procesar la respuesta de Reddit.")
+    return None, "¡Aquí tienes un meme divertido!"
 
 
 def get_movie_poster_url(poster_path):
@@ -386,7 +423,7 @@ async def start_command(message: types.Message):
         user_keyboard = types.ReplyKeyboardMarkup(
             keyboard=[
                 [types.KeyboardButton(text="🔍 Buscar película"), types.KeyboardButton(text="✨ Recomiéndame")],
-                [types.KeyboardButton(text="🎞️ Estrenos")]
+                [types.KeyboardButton(text="🎞️ Estrenos"), types.KeyboardButton(text="📰 Noticias")] # Nuevo botón de Noticias
             ],
             resize_keyboard=True
         )
@@ -861,6 +898,48 @@ async def show_recomendar_by_text(message: types.Message):
         except Exception as e:
             logging.error(f"Error al enviar recomendación: {e}")
 
+@dp.message(F.text == "📰 Noticias") # Nuevo handler para el botón de noticias
+async def send_latest_news_handler(message: types.Message):
+    await message.reply("Buscando las últimas noticias de cine...")
+    articles = await get_latest_news()
+    if not articles:
+        await message.reply("Lo siento, no se encontraron noticias de cine en este momento.")
+        return
+
+    for article in articles[:3]: # Publicar 3 noticias
+        title = article.get("title", "Sin título")
+        description = article.get("description", "Sin descripción")
+        url = article.get("url", "#")
+        image_url = article.get("urlToImage", None)
+
+        news_text = (
+            f"<b>{title}</b>\n\n"
+            f"{description}\n\n"
+            f"<a href='{url}'>Leer más</a>"
+        )
+        if image_url:
+            try:
+                await bot.send_photo(
+                    chat_id=message.chat.id,
+                    photo=image_url,
+                    caption=news_text,
+                    parse_mode=ParseMode.HTML
+                )
+            except Exception:
+                await bot.send_message(
+                    chat_id=message.chat.id,
+                    text=news_text,
+                    parse_mode=ParseMode.HTML,
+                    disable_web_page_preview=True
+                )
+        else:
+            await bot.send_message(
+                chat_id=message.chat.id,
+                text=news_text,
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True
+            )
+
 @dp.callback_query(F.data == "search_by_genre")
 async def search_by_genre_callback(callback_query: types.CallbackQuery):
     await bot.answer_callback_query(callback_query.id)
@@ -1329,20 +1408,20 @@ async def channel_content_scheduler():
         try:
             content_type = random.choice(["meme", "news"])
             if content_type == "meme":
-                meme = random.choice(memes)
-                try:
-                    await bot.send_photo(TELEGRAM_CHANNEL_ID, photo=meme["photo_url"], caption=meme["caption"])
-                    logging.info("Meme publicado con éxito.")
-                except Exception as e:
-                    logging.error(f"Error al publicar un meme: {e}")
+                meme_url, meme_caption = await get_random_meme()
+                if meme_url:
+                    try:
+                        await bot.send_photo(TELEGRAM_CHANNEL_ID, photo=meme_url, caption=meme_caption)
+                        logging.info("Meme publicado con éxito.")
+                    except Exception as e:
+                        logging.error(f"Error al publicar un meme: {e}")
             elif content_type == "news":
-                popular_movies = await get_popular_movies()
-                if popular_movies:
-                    movie = random.choice(popular_movies)
-                    text = f"**Novedad del cine:** '{movie.get('title')}' - {movie.get('overview', 'Sinopsis no disponible')}"
+                articles = await get_latest_news()
+                if articles:
+                    article = random.choice(articles)
+                    text = f"**Novedad del cine:** '{article.get('title', 'Sin título')}' - {article.get('description', 'Sinopsis no disponible')}\n\n<a href='{article.get('url')}'>Leer más</a>"
                     
-                    poster_path = movie.get("poster_path")
-                    poster_url = f"{POSTER_BASE_URL}{poster_path}" if poster_path else None
+                    poster_url = article.get("urlToImage")
                     
                     try:
                         if poster_url:
