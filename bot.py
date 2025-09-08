@@ -1208,8 +1208,8 @@ async def start_voting_command(message: types.Message, state: FSMContext):
         if tmdb_data and tmdb_data.get("poster_path"):
             await bot.send_photo(message.chat.id, photo=f"{POSTER_BASE_URL}{tmdb_data.get('poster_path')}", caption=f"**{tmdb_data.get('title')}**")
         else:
-            await bot.send_message(message.chat.id, text=f"**{movie_info.get('names').split(',')[0]}**")
-        keyboard_buttons.append([types.InlineKeyboardButton(text=f"Votar por '{movie_info.get('names').split(',')[0]}'", callback_data=f"vote_{movie_info.get('id')}")])
+            await bot.send_message(message.chat.id, text=f"**{movie_info.get('names', '').split(',')[0]}**")
+        keyboard_buttons.append([types.InlineKeyboardButton(text=f"Votar por '{movie_info.get('names', '').split(',')[0]}'", callback_data=f"vote_{movie_info.get('id')}")])
     
     keyboard = types.InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
     await bot.send_message(message.chat.id, text=text + "¡Elige tu favorita para que sea la próxima en publicarse!", reply_markup=keyboard)
@@ -1248,7 +1248,7 @@ async def end_voting_task(chat_id, state):
     winning_movie_info = get_movie_by_tmdb_id(winning_movie_id)
     
     if winning_movie_info and final_data["votes"][winning_movie_id] > 0:
-        await bot.send_message(chat_id, f"🏆 ¡La película ganadora es **{winning_movie_info.get('names').split(',')[0]}** con {final_data['votes'][winning_movie_id]} votos! Publicando ahora...")
+        await bot.send_message(chat_id, f"🏆 ¡La película ganadora es **{winning_movie_info.get('names', '').split(',')[0]}** con {final_data['votes'][winning_movie_id]} votos! Publicando ahora...")
         tmdb_data = get_movie_details(winning_movie_id)
         if tmdb_data:
             await delete_old_post(winning_movie_id)
