@@ -93,30 +93,25 @@ def save_movie_to_db(movie_data):
         conn = connect_to_db()
         cursor = conn.cursor()
         
-        # Asegúrate de que los valores no sean None antes de la consulta
-        movie_id = movie_data.get("id")
-        title = movie_data.get("title")
-        names = movie_data.get("names")
-        link = movie_data.get("link")
-        last_message_id = movie_data.get("last_message_id")
-        
-        cursor.execute("SELECT id FROM movies WHERE id = %s", (movie_id,))
+        cursor.execute("SELECT id FROM movies WHERE id = %s", (movie_data.get("id"),))
         existing_id = cursor.fetchone()
         
         if existing_id:
             cursor.execute("""
                 UPDATE movies SET title=%s, names=%s, link=%s, last_message_id=%s WHERE id=%s
             """, (
-                title, names, link, last_message_id, movie_id
+                movie_data.get("title"), movie_data.get("names"),
+                movie_data.get("link"), movie_data.get("last_message_id"), movie_data.get("id")
             ))
-            logging.info(f"Película '{title}' actualizada en Supabase.")
+            logging.info(f"Película '{movie_data.get('title')}' actualizada en Supabase.")
         else:
             cursor.execute("""
                 INSERT INTO movies (id, title, names, link, last_message_id) VALUES (%s, %s, %s, %s, %s)
             """, (
-                movie_id, title, names, link, last_message_id
+                movie_data.get("id"), movie_data.get("title"), movie_data.get("names"),
+                movie_data.get("link"), movie_data.get("last_message_id")
             ))
-            logging.info(f"Nueva película '{title}' agregada a Supabase.")
+            logging.info(f"Nueva película '{movie_data.get('title')}' agregada a Supabase.")
         
         conn.commit()
     except (Exception, psycopg2.DatabaseError) as error:
@@ -150,12 +145,14 @@ def get_movie_by_tmdb_id(tmdb_id):
             conn.close()
     return movie
 
+# NUEVA FUNCIÓN para buscar por nombre
 def find_movie_in_db_by_name(title_to_find):
     conn = None
     movie = None
     try:
         conn = connect_to_db()
         cursor = conn.cursor()
+        # Se busca en la columna 'title' o 'names' de forma no estricta (LIKE)
         cursor.execute("SELECT id, title, names, link, last_message_id FROM movies WHERE lower(title) LIKE %s OR lower(names) LIKE %s", 
                        (f'%{title_to_find.lower()}%', f'%{title_to_find.lower()}%'))
         row = cursor.fetchone()
@@ -884,10 +881,10 @@ async def show_movies_by_genre(callback_query: types.CallbackQuery, page=1):
     keyboard_buttons = []
     if page > 1:
         keyboard_buttons.append(types.InlineKeyboardButton(text="⬅️ Anterior", callback_data=f"genre_page_{genre_id}_{page-1}"))
-    if page < total_pages:
-        pagination_buttons.append(types.InlineKeyboardButton(text="Siguiente ➡️", callback_data=f"genre_page_{genre_id}_{page+1}"))
+    if page + 1 < total_pages:
+        keyboard_buttons.append(types.InlineKeyboardButton(text="Siguiente ➡️", callback_data=f"genre_page_{genre_id}_{page+1}"))
         
-    keyboard_pag = types.InlineKeyboardMarkup(inline_keyboard=[pagination_buttons])
+    keyboard_pag = types.InlineKeyboardMarkup(inline_keyboard=[keyboard_buttons])
 
     await bot.send_message(callback_query.message.chat.id, f"**Aquí tienes algunas películas de {next((k for k, v in GENRES.items() if v == genre_id), 'este género')}:**", reply_markup=keyboard_pag, parse_mode=ParseMode.MARKDOWN)
 
