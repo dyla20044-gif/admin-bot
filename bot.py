@@ -99,7 +99,8 @@ def load_movies_db():
     try:
         content = gist.files[list(gist.files.keys())[0]].content
         data = json.loads(content)
-        movies_db = {d.get("title"): d for d in data.get("movies", [])}
+        # Se convierte la lista de películas a un diccionario usando el ID como clave
+        movies_db = {d.get("id"): d for d in data.get("movies", [])}
         logging.info(f"Se cargaron {len(movies_db)} películas de GitHub Gist.")
     except Exception as e:
         logging.error(f"Error al cargar la base de datos de GitHub Gist: {e}")
@@ -108,12 +109,24 @@ def load_movies_db():
 def save_movies_db(movie_data):
     global movies_db
     try:
-        # Aquí se modifica el diccionario en memoria directamente
-        # para luego guardarlo. Esto evita problemas de concurrencia.
-        movies_db[movie_data.get("title")] = movie_data
+        # Carga siempre la última versión para evitar conflictos
+        load_movies_db() 
+        
+        movie_id = movie_data.get("id")
+        if not movie_id:
+            logging.error("No se pudo guardar la película: falta el ID.")
+            return
+
+        # Si la película ya existe, actualiza sus datos
+        if movie_id in movies_db:
+            movies_db[movie_id].update(movie_data)
+        else:
+            # Si no existe, la añade
+            movies_db[movie_id] = movie_data
+
         movies_list = list(movies_db.values())
         
-        # Corrección clave: Asegurarse de que el last_message_id sea un número o None antes de guardar
+        # Asegurarse de que el last_message_id sea un número o None antes de guardar
         for movie in movies_list:
             if 'last_message_id' in movie and not isinstance(movie['last_message_id'], (int, type(None))):
                 movie['last_message_id'] = None
@@ -127,19 +140,16 @@ def save_movies_db(movie_data):
 
 def find_movie_in_db(title_to_find):
     load_movies_db()
-    for main_title, movie_data in movies_db.items():
+    for movie_data in movies_db.values():
         if "names" in movie_data and title_to_find.lower() in [name.lower().strip() for name in movie_data["names"].split(",")]:
-            return main_title, movie_data
-        elif main_title.lower() == title_to_find.lower():
-            return main_title, movie_data
+            return movie_data.get("title"), movie_data
+        elif movie_data.get("title", "").lower() == title_to_find.lower():
+            return movie_data.get("title"), movie_data
     return None, None
 
 def get_movie_by_tmdb_id(tmdb_id):
     load_movies_db()
-    for movie_data in movies_db.values():
-        if movie_data.get("id") == tmdb_id:
-            return movie_data
-    return None
+    return movies_db.get(tmdb_id)
 
 def get_all_movies():
     load_movies_db()
@@ -287,19 +297,17 @@ def create_movie_message(movie_data, movie_link=None):
 # --- Functions for managing messages on the channel
 async def delete_old_post(movie_id_tmdb):
     found_key = None
-    for key, data in movies_db.items():
-        if data.get("id") == movie_id_tmdb:
-            found_key = key
-            break
-
-    if found_key:
-        old_message_id = movies_db[found_key].get("last_message_id")
+    # Cambiado: Ahora busca en el diccionario de la base de datos
+    movie_data = movies_db.get(movie_id_tmdb)
+    if movie_data:
+        old_message_id = movie_data.get("last_message_id")
         if old_message_id and str(old_message_id) != 'None':
             try:
                 await bot.delete_message(chat_id=TELEGRAM_CHANNEL_ID, message_id=int(old_message_id))
-                logging.info(f"Mensaje anterior con ID {old_message_id} de '{found_key}' eliminado.")
-                movies_db[found_key]["last_message_id"] = None
-                save_movies_db(movies_db[found_key])
+                logging.info(f"Mensaje anterior con ID {old_message_id} de '{movie_data.get('title')}' eliminado.")
+                # Actualizar el last_message_id en la base de datos en memoria
+                movie_data["last_message_id"] = None
+                save_movies_db(movie_data)
             except Exception as e:
                 logging.error(f"Error al intentar borrar el mensaje {old_message_id}: {e}")
 
@@ -322,10 +330,13 @@ async def send_movie_post(chat_id, movie_data, movie_link, post_keyboard):
             )
 
         if chat_id == TELEGRAM_CHANNEL_ID:
-            movie_key = next((k for k, v in movies_db.items() if movie_data.get("id") == v.get("id")), None)
-            if movie_key:
-                movies_db[movie_key]["last_message_id"] = message.message_id
-                save_movies_db(movies_db[movie_key])
+            # Ahora se usa el ID de TMDB como clave
+            movie_id = movie_data.get("id")
+            if movie_id and movie_id in movies_db:
+                movies_db[movie_id]["last_message_id"] = message.message_id
+                save_movies_db(movies_db[movie_id])
+            else:
+                logging.error("No se pudo guardar el ID del mensaje: película no encontrada en la base de datos en memoria.")
 
         return True, message.message_id
     except Exception as e:
@@ -572,24 +583,16 @@ async def add_movie_info(message: types.Message, state: FSMContext):
         )
         return
         
-    movie_data = {
-        "title": main_title,
-        "names": ", ".join(names),
-        "id": found_movie_id,
-        "link": movie_link,
-        "last_message_id": None # Corregido para que se guarde como None
-    }
-    
-    save_movies_db(movie_data)
-    
-    # Después de guardar, verifica si la película está en la base de datos local
-    # y luego procede a ofrecer las opciones.
-    movie_in_db = get_movie_by_tmdb_id(found_movie_id)
-    if not movie_in_db:
-        await message.reply("❌ Ocurrió un error al intentar guardar la película. Por favor, revisa los logs de Render.")
-        await state.clear()
+    movie_data = get_movie_details(found_movie_id)
+    if not movie_data:
+        await message.reply("Ocurrió un error al obtener los detalles de la película desde TMDB.")
         return
 
+    movie_data["names"] = ", ".join(names)
+    movie_data["link"] = movie_link
+    movie_data["last_message_id"] = None
+    
+    save_movies_db(movie_data)
     await state.clear()
     keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
         [types.InlineKeyboardButton(text="➕ Agregar otra película", callback_data="add_movie_again")],
@@ -597,7 +600,6 @@ async def add_movie_info(message: types.Message, state: FSMContext):
         [types.InlineKeyboardButton(text="⏰ Programar publicación", callback_data=f"schedule_movie_{found_movie_id}")]
     ])
     await message.reply("✅ Tu película fue agregada correctamente. ¿Qué quieres hacer ahora?", reply_markup=keyboard)
-
 
 @dp.callback_query(F.data == "add_movie_again")
 async def add_movie_again_callback(callback_query: types.CallbackQuery, state: FSMContext):
@@ -756,7 +758,7 @@ async def show_estrenos_by_text(message: types.Message):
         await message.reply("No se encontraron estrenos recientes en este momento.")
         return
     
-    await message.reply(f"**🎞️ ¡Últimos estrenos!**\n\nAquí tienes las películas más recientes que se han estrenado.\n", parse_mode=ParseMode.MARKDOWN)
+    await message.reply("**🎞️ ¡Últimos estrenos!**\n\nAquí tienes las películas más recientes que se han estrenado.\n", parse_mode=ParseMode.MARKDOWN)
     
     for movie in upcoming_movies[:5]:
         tmdb_id = movie.get("id")
@@ -1071,24 +1073,22 @@ async def confirm_movie_request(callback_query: types.CallbackQuery, state: FSMC
             )
         else:
             await bot.send_message(callback_query.message.chat.id, "Ocurrió un error al intentar publicar la película. Por favor, contacta al administrador.")
-        await state.clear()
-        return
+    else:
+        keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+            [types.InlineKeyboardButton(text="📌 Publicar ahora esta película", callback_data=f"publish_now_from_trakt_{tmdb_id}")]
+        ])
         
-    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-        [types.InlineKeyboardButton(text="📌 Publicar ahora esta película", callback_data=f"publish_now_from_trakt_{tmdb_id}")]
-    ])
+        await bot.send_message(
+            ADMIN_ID,
+            f"El usuario {callback_query.from_user.full_name} (@{callback_query.from_user.username}) ha solicitado la película: <b>{movie_title}</b>\n\n"
+            f"ℹ️ **Se encontró en TMDB con ID:** `{tmdb_id}`",
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboard
+        )
+        
+        await bot.send_message(callback_query.message.chat.id, "Tu solicitud ha sido enviada al administrador. ¡Pronto estará lista!")
     
-    await bot.send_message(
-        ADMIN_ID,
-        f"El usuario {callback_query.from_user.full_name} (@{callback_query.from_user.username}) ha solicitado la película: <b>{movie_title}</b>\n\n"
-        f"ℹ️ **Se encontró en TMDB con ID:** `{tmdb_id}`",
-        parse_mode=ParseMode.HTML,
-        reply_markup=keyboard
-    )
-    
-    await bot.send_message(callback_query.message.chat.id, f"Tu solicitud ha sido enviada al administrador. ¡Pronto estará lista!")
     await state.clear()
-
 
 @dp.message(MovieRequestStates.waiting_for_confirmation)
 async def handle_non_callback_message(message: types.Message):
@@ -1136,7 +1136,7 @@ async def request_movie_by_id(callback_query: types.CallbackQuery, state: FSMCon
         reply_markup=keyboard
     )
     
-    await bot.send_message(callback_query.message.chat.id, f"Tu solicitud ha sido enviada al administrador. ¡Pronto estará lista!")
+    await bot.send_message(callback_query.message.chat.id, f"Tu solicitud ha sido enviada al administrador.")
     await state.clear()
 
 
@@ -1263,8 +1263,6 @@ async def check_scheduled_posts():
                                 logging.info(f"Publicación programada de '{movie_data.get('title')}' enviada con éxito.")
                             else:
                                 logging.error("Error al enviar la publicación programada.")
-                        else:
-                            logging.error(f"Error: No se pudo obtener la información de la película para la publicación programada.")
                     except Exception as e:
                         logging.error(f"Error en la tarea de publicación programada: {e}")
                 asyncio.create_task(publish_later(movie_info, delay))
