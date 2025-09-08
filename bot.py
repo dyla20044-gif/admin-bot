@@ -1,16 +1,12 @@
 import asyncio
 import logging
-import json
 import re
 import os
 import requests
 import psycopg2
 from collections import deque
 import datetime
-import time
 import random
-from flask import Flask
-from threading import Thread
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.enums import ParseMode
@@ -87,7 +83,7 @@ class AdminStates(StatesGroup):
 class VotingStates(StatesGroup):
     waiting_for_votes = State()
 
-# --- Funciones para la base de datos de Supabase (REEMPLAZA TODAS LAS FUNCIONES DE GIST)
+# --- Funciones para la base de datos de Supabase
 def connect_to_db():
     return psycopg2.connect(DATABASE_URL)
 
@@ -97,12 +93,12 @@ def save_movie_to_db(movie_data):
         conn = connect_to_db()
         cursor = conn.cursor()
         
-        cursor.execute("SELECT id FROM movies WHERE id = %s", (movie_data.get("id"),))
+        cursor.execute("SELECT id FROM cine WHERE id = %s", (movie_data.get("id"),))
         existing_id = cursor.fetchone()
         
         if existing_id:
             cursor.execute("""
-                UPDATE movies SET title=%s, names=%s, link=%s, last_message_id=%s WHERE id=%s
+                UPDATE cine SET title=%s, names=%s, link=%s, last_message_id=%s WHERE id=%s
             """, (
                 movie_data.get("title"), movie_data.get("names"),
                 movie_data.get("link"), movie_data.get("last_message_id"), movie_data.get("id")
@@ -110,7 +106,7 @@ def save_movie_to_db(movie_data):
             logging.info(f"Película '{movie_data.get('title')}' actualizada en Supabase.")
         else:
             cursor.execute("""
-                INSERT INTO movies (id, title, names, link, last_message_id) VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO cine (id, title, names, link, last_message_id) VALUES (%s, %s, %s, %s, %s)
             """, (
                 movie_data.get("id"), movie_data.get("title"), movie_data.get("names"),
                 movie_data.get("link"), movie_data.get("last_message_id")
@@ -131,7 +127,7 @@ def get_movie_by_tmdb_id(tmdb_id):
     try:
         conn = connect_to_db()
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM movies WHERE id = %s", (tmdb_id,))
+        cursor.execute("SELECT id, title, names, link, last_message_id FROM cine WHERE id = %s", (tmdb_id,))
         row = cursor.fetchone()
         if row:
             movie = {
@@ -157,7 +153,7 @@ def find_movie_in_db_by_name(title_to_find):
         conn = connect_to_db()
         cursor = conn.cursor()
         # Se busca en la columna 'title' o 'names' de forma no estricta (LIKE)
-        cursor.execute("SELECT * FROM movies WHERE lower(title) LIKE %s OR lower(names) LIKE %s", 
+        cursor.execute("SELECT id, title, names, link, last_message_id FROM cine WHERE lower(title) LIKE %s OR lower(names) LIKE %s", 
                        (f'%{title_to_find.lower()}%', f'%{title_to_find.lower()}%'))
         row = cursor.fetchone()
         if row:
@@ -182,7 +178,7 @@ def get_all_movies():
     try:
         conn = connect_to_db()
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM movies")
+        cursor.execute("SELECT id, title, names, link, last_message_id FROM cine")
         rows = cursor.fetchall()
         for row in rows:
             movies_list.append({
