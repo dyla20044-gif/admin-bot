@@ -27,7 +27,6 @@ TMDB_API_KEY = os.getenv("TMDB_API_KEY")
 TRAKT_CLIENT_ID = os.getenv("TRAKT_CLIENT_ID")
 TRAKT_CLIENT_SECRET = os.getenv("TRAKT_CLIENT_SECRET")
 ADMIN_ID = os.getenv("ADMIN_ID")
-# --- NUEVA VARIABLE PARA SUPABASE ---
 DATABASE_URL = os.getenv("DATABASE_URL")
 # ----------------------------------------
 
@@ -144,6 +143,33 @@ def get_movie_by_tmdb_id(tmdb_id):
             }
     except (Exception, psycopg2.DatabaseError) as error:
         logging.error(f"Error al obtener la película de Supabase: {error}")
+    finally:
+        if conn:
+            cursor.close()
+            conn.close()
+    return movie
+
+# NUEVA FUNCIÓN para buscar por nombre
+def find_movie_in_db_by_name(title_to_find):
+    conn = None
+    movie = None
+    try:
+        conn = connect_to_db()
+        cursor = conn.cursor()
+        # Se busca en la columna 'title' o 'names' de forma no estricta (LIKE)
+        cursor.execute("SELECT * FROM movies WHERE lower(title) LIKE %s OR lower(names) LIKE %s", 
+                       (f'%{title_to_find.lower()}%', f'%{title_to_find.lower()}%'))
+        row = cursor.fetchone()
+        if row:
+            movie = {
+                "id": row[0],
+                "title": row[1],
+                "names": row[2],
+                "link": row[3],
+                "last_message_id": row[4]
+            }
+    except (Exception, psycopg2.DatabaseError) as error:
+        logging.error(f"Error al buscar película por nombre en Supabase: {error}")
     finally:
         if conn:
             cursor.close()
@@ -329,7 +355,7 @@ async def send_movie_post(chat_id, movie_data, movie_link, post_keyboard):
     text, poster_url, _ = create_movie_message(movie_data, movie_link)
 
     try:
-        if poster_url:
+        if poster_url and (poster_url.startswith('http://') or poster_url.startswith('https://')):
             message = await bot.send_photo(
                 chat_id=chat_id,
                 photo=poster_url,
@@ -448,7 +474,7 @@ async def find_movie_to_edit(message: types.Message, state: FSMContext):
         search_id = int(search_query)
         movie_to_edit = get_movie_by_tmdb_id(search_id)
     except ValueError:
-        _, movie_to_edit = find_movie_in_db(search_query)
+        movie_to_edit = find_movie_in_db_by_name(search_query)
 
     if not movie_to_edit:
         await message.reply("No se encontró ninguna película con ese título o ID. Inténtalo de nuevo.")
@@ -968,8 +994,7 @@ async def request_movie_from_user(callback_query: types.CallbackQuery, state: FS
 async def process_movie_request(message: types.Message, state: FSMContext):
     movie_title = message.text.strip()
     
-    # Se ha eliminado find_movie_in_db para buscar directamente en Supabase
-    movie_info_db = get_movie_by_tmdb_id(movie_title) # Esto no funcionará, la búsqueda debe ser por ID
+    movie_info_db = find_movie_in_db_by_name(movie_title)
 
     if movie_info_db:
         movie_id = movie_info_db.get("id")
@@ -1350,7 +1375,6 @@ async def start_webhook_server():
 
 # --- MAIN EXECUTION ---
 async def main():
-    # Se ha eliminado la conexión a GitHub Gist, ya que ahora se usa Supabase.
     
     # Inicia las tareas automáticas
     auto_post_task = asyncio.create_task(auto_post_scheduler())
