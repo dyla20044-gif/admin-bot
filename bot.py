@@ -495,6 +495,7 @@ async def process_edit_movie(message: types.Message, state: FSMContext):
     await message.reply("✅ Película actualizada correctamente.")
     await state.clear()
 
+
 @dp.callback_query(F.data.startswith("catalog_page_"))
 async def navigate_catalog(callback_query: types.CallbackQuery):
     page = int(callback_query.data.split("_")[-1])
@@ -691,7 +692,7 @@ async def process_requested_movie_link(message: types.Message, state: FSMContext
         "names": ", ".join(names),
         "id": tmdb_id,
         "link": movie_link,
-        "last_message_id": ""
+        "last_message_id": None # Corregido: Se guarda como None, que en JSON es null
     }
     save_movies_db(new_movie)
     await delete_old_post(tmdb_id)
@@ -1168,42 +1169,50 @@ async def start_voting_command(message: types.Message, state: FSMContext):
     keyboard = types.InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
     await bot.send_message(message.chat.id, text=text + "¡Elige tu favorita para que sea la próxima en publicarse!", reply_markup=keyboard)
 
-    await asyncio.sleep(600)
-    
+    # El temporizador de votación se debe ejecutar en segundo plano y notificar al terminar.
+    asyncio.create_task(end_voting_task(message.chat.id, state))
+
+@dp.callback_query(F.data.startswith("vote_"), VotingStates.waiting_for_votes)
+async def process_vote(callback_query: types.CallbackQuery, state: FSMContext):
+    user_id = callback_query.from_user.id
+    user_data = await state.get_data()
+    voters = user_data.get("voters", set())
+    if user_id in voters:
+        await bot.answer_callback_query(callback_query.id, "Ya has votado. ¡Gracias!")
+        return
+    movie_id = int(callback_query.data.split("_")[1])
+    votes = user_data.get("votes", {})
+    if movie_id in votes:
+        votes[movie_id] += 1
+    else:
+        votes[movie_id] = 1
+    voters.add(user_id)
+    user_data["votes"] = votes
+    user_data["voters"] = voters
+    await state.update_data(user_data)
+    await bot.answer_callback_query(callback_query.id, "¡Voto registrado!")
+
+async def end_voting_task(chat_id, state):
+    await asyncio.sleep(600)  # 10 minutos para votar
     final_data = await state.get_data()
     if not final_data or not final_data.get("votes"):
-        await message.reply("La votación ha terminado sin votos. ¡Intenta de nuevo más tarde!")
+        await bot.send_message(chat_id, "La votación ha terminado sin votos. ¡Intenta de nuevo más tarde!")
         return
 
     winning_movie_id = max(final_data["votes"], key=final_data["votes"].get)
     winning_movie_info = get_movie_by_tmdb_id(winning_movie_id)
     
     if winning_movie_info and final_data["votes"][winning_movie_id] > 0:
-        await message.reply(f"🏆 ¡La película ganadora es **{winning_movie_info.get('names').split(',')[0]}** con {final_data['votes'][winning_movie_id]} votos! Publicando ahora...")
+        await bot.send_message(chat_id, f"🏆 ¡La película ganadora es **{winning_movie_info.get('names').split(',')[0]}** con {final_data['votes'][winning_movie_id]} votos! Publicando ahora...")
         movie_data = get_movie_details(winning_movie_id)
         if movie_data:
             await delete_old_post(winning_movie_id)
             text, poster_url, post_keyboard = create_movie_message(movie_data, winning_movie_info.get("link"))
             await send_movie_post(TELEGRAM_CHANNEL_ID, movie_data, winning_movie_info.get("link"), post_keyboard)
     else:
-        await message.reply("La votación ha terminado sin votos. ¡Intenta de nuevo más tarde!")
+        await bot.send_message(chat_id, "La votación ha terminado sin votos. ¡Intenta de nuevo más tarde!")
 
     await state.clear()
-
-@dp.callback_query(F.data.startswith("vote_"), VotingStates.waiting_for_votes)
-async def process_vote(callback_query: types.CallbackQuery, state: FSMContext):
-    user_id = callback_query.from_user.id
-    user_data = await state.get_data()
-    voters = user_data["voters"]
-    if user_id in voters:
-        await bot.answer_callback_query(callback_query.id, "Ya has votado. ¡Gracias!")
-        return
-    movie_id = int(callback_query.data.split("_")[1])
-    user_data["votes"][movie_id] += 1
-    user_data["voters"].add(user_id)
-    await state.update_data(user_data)
-    await bot.answer_callback_query(callback_query.id, "¡Voto registrado!")
-
 
 # --- Automated tasks
 async def auto_post_scheduler():
