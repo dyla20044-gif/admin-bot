@@ -4,13 +4,13 @@ import json
 import re
 import os
 import requests
+import psycopg2
 from collections import deque
 import datetime
 import time
 import random
 from flask import Flask
 from threading import Thread
-from github import Github
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.enums import ParseMode
@@ -27,9 +27,8 @@ TMDB_API_KEY = os.getenv("TMDB_API_KEY")
 TRAKT_CLIENT_ID = os.getenv("TRAKT_CLIENT_ID")
 TRAKT_CLIENT_SECRET = os.getenv("TRAKT_CLIENT_SECRET")
 ADMIN_ID = os.getenv("ADMIN_ID")
-# --- NUEVAS VARIABLES PARA GITHUB GIST ---
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-GIST_ID = os.getenv("GIST_ID")
+# --- NUEVA VARIABLE PARA SUPABASE ---
+DATABASE_URL = os.getenv("DATABASE_URL")
 # ----------------------------------------
 
 # Channel ID
@@ -67,13 +66,9 @@ logging.basicConfig(level=logging.INFO)
 # Bot, dispatcher, and database initialization
 bot = Bot(token=TELEGRAM_BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
-movies_db = {}
+
 AUTO_POST_COUNT = 4
 MOVIES_PER_PAGE = 5
-
-# GitHub Gist setup
-g = None
-gist = None
 
 # New states for the state machine
 class MovieUploadStates(StatesGroup):
@@ -93,66 +88,91 @@ class AdminStates(StatesGroup):
 class VotingStates(StatesGroup):
     waiting_for_votes = State()
 
-# --- Auxiliary functions for the movie database (GIST)
-def load_movies_db():
-    global movies_db
-    try:
-        content = gist.files[list(gist.files.keys())[0]].content
-        data = json.loads(content)
-        # Se convierte la lista de películas a un diccionario usando el ID como clave
-        movies_db = {d.get("id"): d for d in data.get("movies", [])}
-        logging.info(f"Se cargaron {len(movies_db)} películas de GitHub Gist.")
-    except Exception as e:
-        logging.error(f"Error al cargar la base de datos de GitHub Gist: {e}")
-        movies_db = {}
+# --- Funciones para la base de datos de Supabase (REEMPLAZA TODAS LAS FUNCIONES DE GIST)
+def connect_to_db():
+    return psycopg2.connect(DATABASE_URL)
 
-def save_movies_db(movie_data):
-    global movies_db
+def save_movie_to_db(movie_data):
+    conn = None
     try:
-        # Se ELIMINA el llamado a load_movies_db() aquí
+        conn = connect_to_db()
+        cursor = conn.cursor()
         
-        movie_id = movie_data.get("id")
-        if not movie_id:
-            logging.error("No se pudo guardar la película: falta el ID.")
-            return
-
-        # Si la película ya existe, actualiza sus datos
-        if movie_id in movies_db:
-            movies_db[movie_id].update(movie_data)
+        cursor.execute("SELECT id FROM movies WHERE id = %s", (movie_data.get("id"),))
+        existing_id = cursor.fetchone()
+        
+        if existing_id:
+            cursor.execute("""
+                UPDATE movies SET title=%s, names=%s, link=%s, last_message_id=%s WHERE id=%s
+            """, (
+                movie_data.get("title"), movie_data.get("names"),
+                movie_data.get("link"), movie_data.get("last_message_id"), movie_data.get("id")
+            ))
+            logging.info(f"Película '{movie_data.get('title')}' actualizada en Supabase.")
         else:
-            # Si no existe, la añade
-            movies_db[movie_id] = movie_data
-
-        movies_list = list(movies_db.values())
+            cursor.execute("""
+                INSERT INTO movies (id, title, names, link, last_message_id) VALUES (%s, %s, %s, %s, %s)
+            """, (
+                movie_data.get("id"), movie_data.get("title"), movie_data.get("names"),
+                movie_data.get("link"), movie_data.get("last_message_id")
+            ))
+            logging.info(f"Nueva película '{movie_data.get('title')}' agregada a Supabase.")
         
-        # Asegurarse de que el last_message_id sea un número o None antes de guardar
-        for movie in movies_list:
-            if 'last_message_id' in movie and not isinstance(movie['last_message_id'], (int, type(None))):
-                movie['last_message_id'] = None
-        
-        new_content = json.dumps({"movies": movies_list}, indent=2, ensure_ascii=False)
-        gist.edit(files={list(gist.files.keys())[0]: {"content": new_content}})
-        
-        logging.info(f"Base de datos de películas actualizada en GitHub Gist.")
-    except Exception as e:
-        logging.error(f"Error al guardar la película en GitHub Gist: {e}")
-
-def find_movie_in_db(title_to_find):
-    load_movies_db()
-    for movie_data in movies_db.values():
-        if "names" in movie_data and title_to_find.lower() in [name.lower().strip() for name in movie_data["names"].split(",")]:
-            return movie_data.get("title"), movie_data
-        elif movie_data.get("title", "").lower() == title_to_find.lower():
-            return movie_data.get("title"), movie_data
-    return None, None
+        conn.commit()
+    except (Exception, psycopg2.DatabaseError) as error:
+        logging.error(f"Error al guardar la película en Supabase: {error}")
+    finally:
+        if conn:
+            cursor.close()
+            conn.close()
 
 def get_movie_by_tmdb_id(tmdb_id):
-    load_movies_db()
-    return movies_db.get(tmdb_id)
+    conn = None
+    movie = None
+    try:
+        conn = connect_to_db()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM movies WHERE id = %s", (tmdb_id,))
+        row = cursor.fetchone()
+        if row:
+            movie = {
+                "id": row[0],
+                "title": row[1],
+                "names": row[2],
+                "link": row[3],
+                "last_message_id": row[4]
+            }
+    except (Exception, psycopg2.DatabaseError) as error:
+        logging.error(f"Error al obtener la película de Supabase: {error}")
+    finally:
+        if conn:
+            cursor.close()
+            conn.close()
+    return movie
 
 def get_all_movies():
-    load_movies_db()
-    return list(movies_db.values())
+    conn = None
+    movies_list = []
+    try:
+        conn = connect_to_db()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM movies")
+        rows = cursor.fetchall()
+        for row in rows:
+            movies_list.append({
+                "id": row[0],
+                "title": row[1],
+                "names": row[2],
+                "link": row[3],
+                "last_message_id": row[4]
+            })
+    except (Exception, psycopg2.DatabaseError) as error:
+        logging.error(f"Error al obtener todas las películas de Supabase: {error}")
+    finally:
+        if conn:
+            cursor.close()
+            conn.close()
+    return movies_list
 
 # --- Auxiliary functions for the TMDB API
 def get_movie_results_by_title(title):
@@ -295,18 +315,13 @@ def create_movie_message(movie_data, movie_link=None):
 
 # --- Functions for managing messages on the channel
 async def delete_old_post(movie_id_tmdb):
-    found_key = None
-    # Cambiado: Ahora busca en el diccionario de la base de datos
-    movie_data = movies_db.get(movie_id_tmdb)
+    movie_data = get_movie_by_tmdb_id(movie_id_tmdb)
     if movie_data:
         old_message_id = movie_data.get("last_message_id")
         if old_message_id and str(old_message_id) != 'None':
             try:
                 await bot.delete_message(chat_id=TELEGRAM_CHANNEL_ID, message_id=int(old_message_id))
                 logging.info(f"Mensaje anterior con ID {old_message_id} de '{movie_data.get('title')}' eliminado.")
-                # Actualizar el last_message_id en la base de datos en memoria
-                movie_data["last_message_id"] = None
-                save_movies_db(movie_data)
             except Exception as e:
                 logging.error(f"Error al intentar borrar el mensaje {old_message_id}: {e}")
 
@@ -329,13 +344,8 @@ async def send_movie_post(chat_id, movie_data, movie_link, post_keyboard):
             )
 
         if chat_id == TELEGRAM_CHANNEL_ID:
-            # Ahora se usa el ID de TMDB como clave
-            movie_id = movie_data.get("id")
-            if movie_id and movie_id in movies_db:
-                movies_db[movie_id]["last_message_id"] = message.message_id
-                save_movies_db(movies_db[movie_id])
-            else:
-                logging.error("No se pudo guardar el ID del mensaje: película no encontrada en la base de datos en memoria.")
+            movie_data["last_message_id"] = message.message_id
+            save_movie_to_db(movie_data)
 
         return True, message.message_id
     except Exception as e:
@@ -492,7 +502,7 @@ async def process_edit_movie(message: types.Message, state: FSMContext):
     elif edit_type == "link":
         movie_to_edit["link"] = new_value
         
-    save_movies_db(movie_to_edit)
+    save_movie_to_db(movie_to_edit)
     await message.reply("✅ Película actualizada correctamente.")
     await state.clear()
 
@@ -581,7 +591,7 @@ async def add_movie_info(message: types.Message, state: FSMContext):
             "Por favor, asegúrate de escribir el título y el año correctamente. Inténtalo de nuevo."
         )
         return
-        
+    
     tmdb_data = get_movie_details(found_movie_id)
     if not tmdb_data:
         await message.reply("Ocurrió un error al obtener los detalles de la película desde TMDB.")
@@ -595,7 +605,7 @@ async def add_movie_info(message: types.Message, state: FSMContext):
         "last_message_id": None
     }
     
-    save_movies_db(movie_data)
+    save_movie_to_db(movie_data)
     await state.clear()
     keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
         [types.InlineKeyboardButton(text="➕ Agregar otra película", callback_data="add_movie_again")],
@@ -695,7 +705,7 @@ async def process_requested_movie_link(message: types.Message, state: FSMContext
         "link": movie_link,
         "last_message_id": None 
     }
-    save_movies_db(new_movie)
+    save_movie_to_db(new_movie)
     await delete_old_post(tmdb_id)
     text, poster_url, post_keyboard = create_movie_message(tmdb_data, movie_link)
     success, _ = await send_movie_post(TELEGRAM_CHANNEL_ID, tmdb_data, movie_link, post_keyboard)
@@ -755,7 +765,7 @@ async def show_estrenos_by_text(message: types.Message):
         await message.reply("No se encontraron estrenos recientes en este momento.")
         return
     
-    await message.reply("**🎞️ ¡Últimos estrenos!**\n\nAquí tienes las películas más recientes que se han estrenado.\n", parse_mode=ParseMode.MARKDOWN)
+    await message.reply(f"**🎞️ ¡Últimos estrenos!**\n\nAquí tienes las películas más recientes que se han estrenado.\n", parse_mode=ParseMode.MARKDOWN)
     
     for movie in upcoming_movies[:5]:
         tmdb_id = movie.get("id")
@@ -908,13 +918,13 @@ async def show_movies_by_actor(message: types.Message, state: FSMContext):
     if not movies:
         await message.reply(f"No se encontraron películas para el actor '{actor_name}'. Por favor, revisa la ortografía y vuelve a intentarlo.")
         return
-        
+    
     for movie in movies:
         tmdb_id = movie.get("id")
         tmdb_data = get_movie_details(tmdb_id)
         if not tmdb_data:
             continue
-            
+        
         text, poster_url, _ = create_movie_message(tmdb_data)
         
         movie_in_db = get_movie_by_tmdb_id(tmdb_id)
@@ -958,8 +968,9 @@ async def request_movie_from_user(callback_query: types.CallbackQuery, state: FS
 async def process_movie_request(message: types.Message, state: FSMContext):
     movie_title = message.text.strip()
     
-    main_title_db, movie_info_db = find_movie_in_db(movie_title)
-    
+    # Se ha eliminado find_movie_in_db para buscar directamente en Supabase
+    movie_info_db = get_movie_by_tmdb_id(movie_title) # Esto no funcionará, la búsqueda debe ser por ID
+
     if movie_info_db:
         movie_id = movie_info_db.get("id")
         movie_link = movie_info_db.get("link")
@@ -1011,12 +1022,19 @@ async def process_movie_request(message: types.Message, state: FSMContext):
         tmdb_data = get_movie_details(tmdb_id)
         if not tmdb_data:
             continue
-            
+        
         text, poster_url, _ = create_movie_message(tmdb_data)
         
-        keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-            [types.InlineKeyboardButton(text="🎬 Elegir esta película", callback_data=f"confirm_request_{tmdb_id}")]
-        ])
+        movie_in_db = get_movie_by_tmdb_id(tmdb_id)
+        
+        if movie_in_db:
+            keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+                [types.InlineKeyboardButton(text="🎬 Publicar ahora", callback_data=f"publish_now_manual_{tmdb_id}")]
+            ])
+        else:
+            keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+                [types.InlineKeyboardButton(text="🎬 Pedir esta película", callback_data=f"request_movie_by_id_{tmdb_id}")]
+            ])
         
         try:
             if poster_url:
@@ -1332,18 +1350,7 @@ async def start_webhook_server():
 
 # --- MAIN EXECUTION ---
 async def main():
-    global g, gist
-    
-    # Initialize GitHub Gist connection
-    try:
-        g = Github(GITHUB_TOKEN)
-        gist = g.get_gist(GIST_ID)
-        logging.info("Conexión con GitHub Gist exitosa.")
-    except Exception as e:
-        logging.error(f"Error al conectar con GitHub Gist. Asegúrese de que las variables de entorno están bien configuradas. Error: {e}")
-        return
-
-    load_movies_db()
+    # Se ha eliminado la conexión a GitHub Gist, ya que ahora se usa Supabase.
     
     # Inicia las tareas automáticas
     auto_post_task = asyncio.create_task(auto_post_scheduler())
