@@ -60,6 +60,9 @@ dp = Dispatcher()
 AUTO_POST_COUNT = 4
 MOVIES_PER_PAGE = 5
 SEARCH_RESULTS_PER_PAGE = 5
+RECOMENDACIONES_PER_PAGE = 5
+ESTRENOS_PER_PAGE = 5
+
 
 # New states for the state machine
 class MovieUploadStates(StatesGroup):
@@ -245,6 +248,7 @@ async def get_upcoming_movies(page=1):
         return [], 1
 
 async def get_movies_by_actor(actor_name):
+    # --- CAMBIO #3: REVISIÓN DE BÚSQUEDA POR ACTOR ---
     url = f"{BASE_TMDB_URL}/search/person"
     params = {"api_key": TMDB_API_KEY, "query": actor_name, "language": "es-ES"}
     try:
@@ -252,7 +256,8 @@ async def get_movies_by_actor(actor_name):
             async with session.get(url, params=params) as response:
                 response.raise_for_status()
                 actor = (await response.json()).get("results")[0] if (await response.json()).get("results") else None
-                if not actor: return []
+                if not actor: 
+                    return []
                 
                 person_id = actor.get("id")
                 url = f"{BASE_TMDB_URL}/person/{person_id}/movie_credits"
@@ -260,7 +265,8 @@ async def get_movies_by_actor(actor_name):
                 async with session.get(url, params=params) as response:
                     response.raise_for_status()
                     movies = sorted((await response.json()).get("cast", []), key=lambda x: x.get("popularity", 0), reverse=True)
-                    return movies[:5]
+                    # Devolver más resultados para permitir la paginación si es necesario
+                    return movies
     except aiohttp.ClientError as e:
         logging.error(f"Error al buscar películas por actor: {e}")
         return []
@@ -337,14 +343,16 @@ def get_movie_poster_url(poster_path):
 
 # --- Movie message creation
 def create_movie_message(movie_data, movie_link=None):
+    # --- CAMBIO #4: MENSAJES MÁS CORTOS Y ATRACTIVOS ---
     title = movie_data.get("title", "Título no disponible")
     overview = movie_data.get("overview", "Sinopsis no disponible")
     release_date = movie_data.get("release_date", "Fecha no disponible")
     vote_average = movie_data.get("vote_average", 0)
     poster_path = movie_data.get("poster_path")
 
-    if not overview.strip():
-        overview = "Sinopsis no disponible."
+    # Limita la sinopsis para que no sea muy larga
+    if len(overview) > 250:
+        overview = overview[:250] + "..."
 
     text = (
         f"<b>🎬 {title}</b>\n\n"
@@ -352,6 +360,7 @@ def create_movie_message(movie_data, movie_link=None):
         f"📅 <b>Fecha de estreno:</b> {release_date}\n"
         f"⭐ <b>Puntuación:</b> {vote_average:.1f}/10"
     )
+    # --- FIN CAMBIO #4 ---
 
     if movie_link:
         post_keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
@@ -875,8 +884,7 @@ async def final_schedule_callback(callback_query: types.CallbackQuery):
 
 @dp.message(F.text == "🎞️ Estrenos")
 async def show_estrenos_by_text(message: types.Message):
-    # --- CAMBIO #4: IMPLEMENTACIÓN DE PAGINACIÓN EN "ESTRENOS" ---
-    await show_estrenos_page(message.chat.id, page=1)
+    await show_estrenos_page(message.chat.id, page=1, is_start_message=True)
 
 @dp.callback_query(F.data.startswith("estrenos_page_"))
 async def navigate_estrenos_page(callback_query: types.CallbackQuery):
@@ -884,16 +892,19 @@ async def navigate_estrenos_page(callback_query: types.CallbackQuery):
     await bot.answer_callback_query(callback_query.id)
     await show_estrenos_page(callback_query.message.chat.id, page)
 
-async def show_estrenos_page(chat_id, page):
-    await bot.send_message(chat_id, "Buscando los últimos estrenos...")
+async def show_estrenos_page(chat_id, page, is_start_message=False):
+    if is_start_message:
+        await bot.send_message(chat_id, "Buscando los últimos estrenos... 🎬")
+    else:
+        await bot.delete_message(chat_id=chat_id, message_id=message_id)
+
     upcoming_movies, total_pages = await get_upcoming_movies(page)
+    
     if not upcoming_movies:
-        await bot.send_message(chat_id, "No se encontraron más estrenos recientes en este momento.")
+        await bot.send_message(chat_id, "No se encontraron más estrenos recientes en este momento. Vuelve a intentarlo más tarde.")
         return
 
-    await bot.send_message(chat_id, f"**🎞️ ¡Últimos estrenos!** (Página {page}/{total_pages})\n\nAquí tienes las películas más recientes que se han estrenado.\n", parse_mode=ParseMode.MARKDOWN)
-
-    for movie in upcoming_movies:
+    for movie in upcoming_movies[:ESTRENOS_PER_PAGE]:
         tmdb_id = movie.get("id")
         tmdb_data = await get_movie_details(tmdb_id)
         if not tmdb_data:
@@ -917,12 +928,13 @@ async def show_estrenos_page(chat_id, page):
         except Exception as e:
             logging.error(f"Error al enviar estreno: {e}")
     
+    # --- CAMBIO #1: BOTÓN "VER MÁS ESTRENOS" CON PAGINACIÓN ---
     if page < total_pages:
         keyboard_next = types.InlineKeyboardMarkup(inline_keyboard=[
-            [types.InlineKeyboardButton(text="Siguiente ➡️", callback_data=f"estrenos_page_{page+1}")]
+            [types.InlineKeyboardButton(text="Ver más estrenos ➡️", callback_data=f"estrenos_page_{page+1}")]
         ])
-        await bot.send_message(chat_id, "Ver más estrenos:", reply_markup=keyboard_next)
-# --- FIN CAMBIO #4 ---
+        await bot.send_message(chat_id, "Mira lo que sigue:", reply_markup=keyboard_next)
+    # --- FIN CAMBIO #1 ---
 
 @dp.message(F.text == "🔍 Buscar película")
 async def show_search_options_by_text(message: types.Message):
@@ -933,14 +945,13 @@ async def show_search_options_by_text(message: types.Message):
         [types.InlineKeyboardButton(text="✨ Solicitar una película", callback_data="request_movie_from_user")]
     ])
     await message.reply(
-        "¿Cómo quieres buscar la película?",
+        "¿Cómo quieres buscar la película? 🔎",
         reply_markup=keyboard
     )
 
 @dp.message(F.text == "✨ Recomiéndame")
 async def show_recomendar_by_text(message: types.Message):
-    # --- CAMBIO #3: IMPLEMENTACIÓN DE PAGINACIÓN EN "RECOMIÉNDAME" ---
-    await show_recomendar_page(message.chat.id, page=1)
+    await show_recomendar_page(message.chat.id, page=1, is_start_message=True)
 
 @dp.callback_query(F.data.startswith("recomendar_page_"))
 async def navigate_recomendar_page(callback_query: types.CallbackQuery):
@@ -948,16 +959,19 @@ async def navigate_recomendar_page(callback_query: types.CallbackQuery):
     await bot.answer_callback_query(callback_query.id)
     await show_recomendar_page(callback_query.message.chat.id, page)
 
-async def show_recomendar_page(chat_id, page):
-    await bot.send_message(chat_id, "Obteniendo recomendaciones...")
+async def show_recomendar_page(chat_id, page, is_start_message=False):
+    if is_start_message:
+        await bot.send_message(chat_id, "Obteniendo recomendaciones... ✨")
+    else:
+        await bot.delete_message(chat_id=chat_id, message_id=message_id)
+
     popular_movies, total_pages = await get_popular_movies(page)
+    
     if not popular_movies:
-        await bot.send_message(chat_id, "No se pudieron obtener más recomendaciones en este momento.")
+        await bot.send_message(chat_id, "No se pudieron obtener más recomendaciones en este momento. Vuelve a intentarlo más tarde.")
         return
 
-    await bot.send_message(chat_id, f"**✨ ¡Películas recomendadas!** (Página {page}/{total_pages})\n\nAquí tienes algunas películas populares que podrían gustarte.\n", parse_mode=ParseMode.MARKDOWN)
-
-    for movie in popular_movies:
+    for movie in popular_movies[:RECOMENDACIONES_PER_PAGE]:
         tmdb_id = movie.get("id")
         tmdb_data = await get_movie_details(tmdb_id)
         if not tmdb_data:
@@ -981,12 +995,13 @@ async def show_recomendar_page(chat_id, page):
         except Exception as e:
             logging.error(f"Error al enviar recomendación: {e}")
     
+    # --- CAMBIO #1: BOTÓN "VER MÁS RECOMENDACIONES" CON PAGINACIÓN ---
     if page < total_pages:
         keyboard_next = types.InlineKeyboardMarkup(inline_keyboard=[
-            [types.InlineKeyboardButton(text="Siguiente ➡️", callback_data=f"recomendar_page_{page+1}")]
+            [types.InlineKeyboardButton(text="Ver más recomendaciones ➡️", callback_data=f"recomendar_page_{page+1}")]
         ])
-        await bot.send_message(chat_id, "Ver más recomendaciones:", reply_markup=keyboard_next)
-# --- FIN CAMBIO #3 ---
+        await bot.send_message(chat_id, "Mira lo que sigue:", reply_markup=keyboard_next)
+    # --- FIN CAMBIO #1 ---
 
 @dp.message(F.text == "📰 Noticias")
 async def send_latest_news_handler(message: types.Message):
@@ -1114,26 +1129,25 @@ async def search_by_actor_callback(callback_query: types.CallbackQuery, state: F
     await state.update_data(search_type='actor')
     await bot.send_message(callback_query.message.chat.id, "Por favor, escribe el nombre del actor que quieres buscar. Puedes volver al menú principal de búsqueda en cualquier momento presionando /cancelar.")
     await state.set_state(MovieRequestStates.waiting_for_search_query)
-
+# --- CAMBIO #2: FUNCIÓN DE BÚSQUEDA Y PAGINACIÓN MEJORADA ---
 @dp.callback_query(F.data == "search_by_name")
 async def ask_for_movie_by_name(callback_query: types.CallbackQuery, state: FSMContext):
     await bot.answer_callback_query(callback_query.id)
-    await state.update_data(search_type='name', page=1)
+    await state.set_state(MovieRequestStates.waiting_for_search_query)
     await bot.send_message(
         chat_id=callback_query.message.chat.id,
-        text="Por favor, escribe el nombre completo de la película y el año. Asegúrate de escribir correctamente el título y el año."
+        text="Por favor, escribe el nombre de la película. Si hay muchas coincidencias, puedes agregar el año para una búsqueda más precisa."
     )
-    await state.set_state(MovieRequestStates.waiting_for_search_query)
 
-@dp.callback_query(F.data == "request_movie_from_user")
-async def request_movie_from_user(callback_query: types.CallbackQuery, state: FSMContext):
+@dp.callback_query(F.data == "search_by_actor")
+async def ask_for_movie_by_actor(callback_query: types.CallbackQuery, state: FSMContext):
     await bot.answer_callback_query(callback_query.id)
-    await state.update_data(search_type='request')
+    await state.set_state(MovieRequestStates.waiting_for_search_query)
+    await state.update_data(search_type='actor')
     await bot.send_message(
         chat_id=callback_query.message.chat.id,
-        text="Por favor, escribe el nombre de la película que te gustaría solicitar. Puedes volver al menú principal de búsqueda en cualquier momento presionando /cancelar."
+        text="Por favor, escribe el nombre del actor."
     )
-    await state.set_state(MovieRequestStates.waiting_for_search_query)
 
 @dp.message(Command("cancelar"))
 async def cancel_search_mode(message: types.Message, state: FSMContext):
@@ -1148,21 +1162,24 @@ async def process_search_query(message: types.Message, state: FSMContext):
     page = user_data.get('page', 1)
     
     await message.reply(f"Buscando '{search_query}'...")
-    
-    # --- CAMBIO #1: BÚSQUEDA SIMULTÁNEA Y PAGINACIÓN DE RESULTADOS ---
-    async def search_all_sources(query, page_num):
-        tmdb_results, total_pages = await get_movie_results_by_title(query, page=page_num)
-        return tmdb_results, total_pages
-        
-    movie_results, total_pages = await search_all_sources(search_query, page)
 
-    if not movie_results:
+    results_to_display = []
+    if search_type == 'name':
+        tmdb_results, total_pages = await get_movie_results_by_title(search_query, page)
+        results_to_display = tmdb_results
+    elif search_type == 'actor':
+        actor_movies = await get_movies_by_actor(search_query)
+        total_pages = (len(actor_movies) + SEARCH_RESULTS_PER_PAGE - 1) // SEARCH_RESULTS_PER_PAGE
+        start = (page - 1) * SEARCH_RESULTS_PER_PAGE
+        end = start + SEARCH_RESULTS_PER_PAGE
+        results_to_display = actor_movies[start:end]
+        
+    if not results_to_display:
         await message.reply(f"No se encontraron resultados para '{search_query}'. Por favor, intenta con otra búsqueda o usa /cancelar para salir.")
+        await state.clear()
         return
-    
-    await message.reply(f"Resultados para '{search_query}':")
-    
-    for movie in movie_results[:SEARCH_RESULTS_PER_PAGE]:
+
+    for movie in results_to_display:
         tmdb_id = movie.get("id")
         tmdb_data = await get_movie_details(tmdb_id)
         if not tmdb_data:
@@ -1197,28 +1214,30 @@ async def process_search_query(message: types.Message, state: FSMContext):
                 )
         except Exception as e:
             logging.error(f"Error al enviar resultado de búsqueda: {e}")
-    
-    pagination_buttons = []
-    if page < total_pages:
-        pagination_buttons.append(types.InlineKeyboardButton(text="Siguiente ➡️", callback_data=f"search_next_page_{page+1}_{search_query}"))
-    pagination_buttons.append(types.InlineKeyboardButton(text="Buscar otra película 🔍", callback_data="search_by_name"))
 
-    if pagination_buttons:
-        keyboard_pag = types.InlineKeyboardMarkup(inline_keyboard=[pagination_buttons])
+    keyboard_buttons = []
+    if page < total_pages:
+        keyboard_buttons.append(types.InlineKeyboardButton(text="Ver más ➡️", callback_data=f"search_next_page_{search_type}_{page+1}_{search_query}"))
+    
+    keyboard_buttons.append(types.InlineKeyboardButton(text="Buscar otra película 🔍", callback_data="search_by_name"))
+
+    if keyboard_buttons:
+        keyboard_pag = types.InlineKeyboardMarkup(inline_keyboard=[keyboard_buttons])
         await bot.send_message(message.chat.id, "Navega en los resultados:", reply_markup=keyboard_pag)
 
     await state.clear()
-# --- FIN CAMBIO #1 ---
 
 @dp.callback_query(F.data.startswith("search_next_page_"))
 async def navigate_search_results(callback_query: types.CallbackQuery, state: FSMContext):
     parts = callback_query.data.split('_')
+    search_type = parts[2]
     page = int(parts[3])
     search_query = parts[4]
 
     await bot.answer_callback_query(callback_query.id)
-    await state.update_data(search_type='name', search_query=search_query, page=page)
+    await state.update_data(search_type=search_type, search_query=search_query, page=page)
     await process_search_query(callback_query.message, state)
+# --- FIN CAMBIO #2 ---
 
 
 @dp.callback_query(F.data == "back_to_search_menu")
@@ -1289,13 +1308,6 @@ async def navigate_genre_page(callback_query: types.CallbackQuery):
     except Exception as e:
         logging.error(f"Error al borrar mensaje de catálogo: {e}")
     await show_movies_by_genre(callback_query, page=page)
-
-@dp.callback_query(F.data == "search_by_actor")
-async def search_by_actor_callback(callback_query: types.CallbackQuery, state: FSMContext):
-    await bot.answer_callback_query(callback_query.id)
-    await state.update_data(search_type='actor')
-    await bot.send_message(callback_query.message.chat.id, "Por favor, escribe el nombre del actor que quieres buscar. Puedes volver al menú principal de búsqueda en cualquier momento presionando /cancelar.")
-    await state.set_state(MovieRequestStates.waiting_for_search_query)
 
 @dp.callback_query(F.data.startswith("publish_now_manual_"))
 async def publish_now_manual_callback(callback_query: types.CallbackQuery):
