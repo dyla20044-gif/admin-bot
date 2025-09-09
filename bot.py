@@ -81,10 +81,8 @@ class AdminStates(StatesGroup):
 class VotingStates(StatesGroup):
     waiting_for_votes = State()
 
-# --- CAMBIO #1: NUEVO ESTADO PARA SOPORTE ---
 class SupportStates(StatesGroup):
     waiting_for_support_message = State()
-# --- FIN CAMBIO #1 ---
 
 # --- Funciones de Base de Datos (Motor - Asíncrono) ---
 
@@ -111,7 +109,6 @@ async def save_movie_to_db(movie_data):
     try:
         movie_id = movie_data.get("id")
         
-        # En MongoDB, actualizamos si existe o insertamos si no
         await collection.update_one(
             {"id": movie_id},
             {"$set": movie_data},
@@ -313,14 +310,13 @@ async def get_latest_news():
 
 async def get_random_meme():
     url = "https://www.reddit.com/r/memesenespanol/.json?limit=50"
-    headers = {"User-Agent": "MyBot/0.1"} # Necesario para Reddit
+    headers = {"User-Agent": "MyBot/0.1"}
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url, headers=headers) as response:
                 response.raise_for_status()
                 data = await response.json()
                 posts = data['data']['children']
-                # Filtra solo los posts con imágenes
                 image_posts = [p for p in posts if p['data'].get('url_overridden_by_dest') and p['data']['url_overridden_by_dest'].endswith(('.jpg', '.png'))]
                 if image_posts:
                     random_post = random.choice(image_posts)
@@ -409,7 +405,6 @@ async def send_movie_post(chat_id, movie_data, movie_link, post_keyboard):
         logging.error(f"Error al enviar la publicación: {e}")
         return False, None
 
-# --- CAMBIO #1: ELIMINAR HANDLER "BORRAR CACHÉ" Y AÑADIR "SOPORTE" ---
 @dp.message(F.text == "🆘 Soporte")
 async def start_support_handler(message: types.Message, state: FSMContext):
     await state.set_state(SupportStates.waiting_for_support_message)
@@ -432,17 +427,14 @@ async def process_support_message(message: types.Message, state: FSMContext):
         logging.error(f"Error al reenviar mensaje de soporte al administrador: {e}")
     finally:
         await state.clear()
-# --- FIN CAMBIO #1 ---
 
 @dp.message(Command("start"))
 async def start_command(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     chat_id = message.chat.id
     
-    # Limpiar el estado de FSM para evitar que el bot se confunda
     await state.clear()
     
-    # Lógica para admins vs usuarios
     if str(user_id) == ADMIN_ID:
         keyboard = types.ReplyKeyboardMarkup(
             keyboard=[
@@ -455,10 +447,9 @@ async def start_command(message: types.Message, state: FSMContext):
             "¡Hola, Administrador! Elige una opción:",
             reply_markup=keyboard,
         )
-        # Los admins no tienen limpieza de chat para mantener el historial
         user_message_ids[user_id] = [sent_message.message_id]
 
-    else: # Lógica para usuarios normales: limpia el historial
+    else:
         if user_id in user_message_ids:
             for msg_id in user_message_ids[user_id]:
                 try:
@@ -467,7 +458,6 @@ async def start_command(message: types.Message, state: FSMContext):
                     pass
         user_message_ids[user_id] = []
         
-        # --- CAMBIO #1: REEMPLAZAR BOTÓN "BORRAR CACHÉ" POR "SOPORTE" ---
         user_keyboard = types.ReplyKeyboardMarkup(
             keyboard=[
                 [types.KeyboardButton(text="🔍 Buscar película"), types.KeyboardButton(text="✨ Recomiéndame")],
@@ -475,7 +465,6 @@ async def start_command(message: types.Message, state: FSMContext):
             ],
             resize_keyboard=True
         )
-        # --- FIN CAMBIO #1 ---
         
         caption = "¡Hola! Soy un bot que te ayuda a encontrar tus películas favoritas. ¡Usa el menú de abajo para empezar!"
         
@@ -776,7 +765,6 @@ async def publish_now_from_trakt_callback(callback_query: types.CallbackQuery, s
     await bot.answer_callback_query(callback_query.id, "Preparando para agregar la película...", show_alert=True)
     parts = callback_query.data.split('_')
     tmdb_id = int(parts[-1])
-    # --- CAMBIO: Manejo de error de TMDB 404 ---
     tmdb_data = await get_movie_details(tmdb_id)
     if not tmdb_data:
         await bot.send_message(callback_query.message.chat.id, "No se pudo obtener la información completa de la película desde TMDB. Por favor, reinicie el proceso manualmente.")
@@ -786,7 +774,6 @@ async def publish_now_from_trakt_callback(callback_query: types.CallbackQuery, s
         movie_title=tmdb_data.get("title"),
         original_request_id=callback_query.message.message_id
     )
-    # --- CAMBIO IMPORTANTE: Notificación al admin con imagen ---
     poster_url = get_movie_poster_url(tmdb_data.get("poster_path"))
     caption = f"Por favor, ahora envía el enlace de la película '{tmdb_data.get('title')}' para publicarla."
     
@@ -973,7 +960,6 @@ async def send_latest_news_handler(message: types.Message):
         await message.reply("Lo siento, no se encontraron noticias de cine en este momento.")
         return
 
-    # --- CAMBIO #4: ENVIAR MENSAJES DE NOTICIAS CON PORTADAS/IMAGENES ---
     for article in articles[:3]:
         title = article.get("title", "Sin título")
         description = article.get("description", "Sin descripción")
@@ -1008,7 +994,6 @@ async def send_latest_news_handler(message: types.Message):
                 parse_mode=ParseMode.HTML,
                 disable_web_page_preview=True
             )
-    # --- FIN CAMBIO #4 ---
 
 @dp.callback_query(F.data == "search_by_genre")
 async def search_by_genre_callback(callback_query: types.CallbackQuery):
@@ -1098,12 +1083,10 @@ async def search_by_actor_callback(callback_query: types.CallbackQuery, state: F
 async def ask_for_movie_by_name(callback_query: types.CallbackQuery, state: FSMContext):
     await bot.answer_callback_query(callback_query.id)
     await state.update_data(search_type='name')
-    # --- CAMBIO #2: ACTUALIZAR MENSAJE DE BÚSQUEDA ---
     await bot.send_message(
         chat_id=callback_query.message.chat.id,
         text="Por favor, escribe el nombre completo de la película y el año. Asegúrate de escribir correctamente el título y el año."
     )
-    # --- FIN CAMBIO #2 ---
     await state.set_state(MovieRequestStates.waiting_for_search_query)
 
 @dp.callback_query(F.data == "request_movie_from_user")
@@ -1146,7 +1129,6 @@ async def process_search_query(message: types.Message, state: FSMContext):
         await message.reply(f"No se encontraron resultados para '{search_query}'. Por favor, intenta con otra búsqueda o usa /cancelar para salir.")
         return
     
-    # --- CAMBIO #2: MOSTRAR RESULTADOS COMO MENSAJES INDIVIDUALES ---
     await message.reply(f"Resultados para '{search_query}':")
     
     for movie in movie_results[:SEARCH_RESULTS_PER_PAGE]:
@@ -1186,7 +1168,6 @@ async def process_search_query(message: types.Message, state: FSMContext):
             logging.error(f"Error al enviar resultado de búsqueda: {e}")
     
     await state.clear()
-# --- FIN CAMBIO #2 ---
 
 
 @dp.callback_query(F.data.startswith("search_page_"))
@@ -1286,7 +1267,6 @@ async def confirm_movie_request(callback_query: types.CallbackQuery, state: FSMC
         else:
             await bot.send_message(callback_query.message.chat.id, "Ocurrió un error al intentar publicar la película. Por favor, contacta al administrador.")
     else:
-        # --- CAMBIO #3: ENVIAR NOTIFICACIÓN CON PORTADA AL ADMINISTRADOR ---
         poster_url = get_movie_poster_url(tmdb_data.get("poster_path"))
         caption_text = f"El usuario {callback_query.from_user.full_name} (@{callback_query.from_user.username}) ha solicitado la película: <b>{movie_title}</b>\n\n" \
                        f"ℹ️ **Se encontró en TMDB con ID:** `{tmdb_id}`"
@@ -1315,7 +1295,6 @@ async def confirm_movie_request(callback_query: types.CallbackQuery, state: FSMC
         except Exception as e:
             logging.error(f"Error al enviar la solicitud al administrador con portada: {e}")
             await bot.send_message(callback_query.message.chat.id, "Tu solicitud ha sido enviada al administrador, pero ocurrió un error al procesarla. Disculpa las molestias.")
-        # --- FIN CAMBIO #3 ---
     
     await state.clear()
 
@@ -1349,7 +1328,6 @@ async def request_movie_by_id(callback_query: types.CallbackQuery, state: FSMCon
         return
         
     movie_title = tmdb_data.get("title")
-    # --- CAMBIO #3: ENVIAR NOTIFICACIÓN CON PORTADA AL ADMINISTRADOR ---
     poster_url = get_movie_poster_url(tmdb_data.get("poster_path"))
     caption_text = f"El usuario {callback_query.from_user.full_name} (@{callback_query.from_user.username}) ha solicitado la película: <b>{movie_title}</b>\n\n" \
                    f"ℹ️ **Se encontró en TMDB con ID:** `{tmdb_id}`"
@@ -1378,7 +1356,6 @@ async def request_movie_by_id(callback_query: types.CallbackQuery, state: FSMCon
     except Exception as e:
         logging.error(f"Error al enviar la solicitud al administrador con portada: {e}")
         await bot.send_message(callback_query.message.chat.id, "Tu solicitud ha sido enviada al administrador, pero ocurrió un error al procesarla. Disculpa las molestias.")
-    # --- FIN CAMBIO #3 ---
     await state.clear()
 
 
@@ -1415,7 +1392,6 @@ async def start_voting_command(message: types.Message, state: FSMContext):
     keyboard = types.InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
     await bot.send_message(message.chat.id, text=text + "¡Elige tu favorita para que sea la próxima en publicarse!", reply_markup=keyboard)
 
-    # El temporizador de votación se debe ejecutar en segundo plano y notificar al terminar.
     asyncio.create_task(end_voting_task(message.chat.id, state))
 
 @dp.callback_query(F.data.startswith("vote_"), VotingStates.waiting_for_votes)
@@ -1439,7 +1415,7 @@ async def process_vote(callback_query: types.CallbackQuery, state: FSMContext):
     await bot.answer_callback_query(callback_query.id, "¡Voto registrado!")
 
 async def end_voting_task(chat_id, state):
-    await asyncio.sleep(600)  # 10 minutos para votar
+    await asyncio.sleep(600)
     final_data = await state.get_data()
     if not final_data or not final_data.get("votes"):
         await bot.send_message(chat_id, "La votación ha terminado sin votos. ¡Intenta de nuevo más tarde!")
@@ -1567,8 +1543,11 @@ async def handle_telegram_webhook(request):
         await dp.feed_update(bot, update)
         return web.Response()
     except Exception as e:
+        # AÑADIDO: Este bloque catch, maneja el error de "la consulta es demasiado antigua"
+        # y otros errores de procesamiento de webhook. Es vital que devuelva un 200 para que
+        # Telegram no reintente la misma actualización una y otra vez.
         logging.error(f"Error al procesar el webhook de Telegram: {e}")
-        return web.Response(text="Error", status=500)
+        return web.Response(text="OK")
 
 async def start_webhook_server():
     app = web.Application()
