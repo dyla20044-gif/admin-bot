@@ -32,6 +32,19 @@ NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 TELEGRAM_MAIN_CHANNEL_ID = -1002240787394  # Canal con enlaces de descarga
 TELEGRAM_PUBLIC_CHANNEL_ID = -1001945286271 # Canal público de redirección
 
+# Nuevas variables para canales adicionales
+# Puedes agregar hasta 3 canales aquí.
+# Edita solo los valores de los IDs.
+ADDITIONAL_PUBLIC_CHANNELS = [
+    os.getenv("PUBLIC_CHANNEL_ID_2"), # ID del segundo canal público
+    os.getenv("PUBLIC_CHANNEL_ID_3"), # ID del tercer canal público
+    os.getenv("PUBLIC_CHANNEL_ID_4")  # ID del cuarto canal público
+]
+# Limpiar canales vacíos y convertir a entero
+VALID_ADDITIONAL_CHANNELS = [int(cid) for cid in ADDITIONAL_PUBLIC_CHANNELS if cid]
+ALL_PUBLIC_CHANNELS = [TELEGRAM_PUBLIC_CHANNEL_ID] + VALID_ADDITIONAL_CHANNELS
+
+
 BASE_TMDB_URL = "https://api.themoviedb.org/3"
 POSTER_BASE_URL = "https://image.tmdb.org/t/p/w500"
 TRAKT_BASE_URL = "https://api.trakt.tv"
@@ -406,8 +419,8 @@ async def delete_old_post(movie_id_tmdb):
                 logging.error(f"Error al intentar borrar el mensaje {old_message_id}: {e}")
 
 async def forward_post_to_public_channel(original_message: types.Message, movie_data):
-    if not TELEGRAM_PUBLIC_CHANNEL_ID:
-        logging.warning("TELEGRAM_PUBLIC_CHANNEL_ID no está configurado. No se puede reenviar el post.")
+    if not ALL_PUBLIC_CHANNELS:
+        logging.warning("No hay canales públicos configurados. No se puede reenviar el post.")
         return
 
     try:
@@ -433,28 +446,28 @@ async def forward_post_to_public_channel(original_message: types.Message, movie_
         ])
 
         poster_url = get_movie_poster_url(movie_data.get("poster_path"))
-
-        if poster_url:
-            await bot.send_photo(
-                chat_id=TELEGRAM_PUBLIC_CHANNEL_ID,
-                photo=poster_url,
-                caption=caption_text,
-                reply_markup=keyboard,
-                parse_mode=ParseMode.MARKDOWN
-            )
-        else:
-            await bot.send_message(
-                chat_id=TELEGRAM_PUBLIC_CHANNEL_ID,
-                text=caption_text,
-                reply_markup=keyboard,
-                parse_mode=ParseMode.MARKDOWN,
-                disable_web_page_preview=True
-            )
-            
-        logging.info(f"Enlace al post {original_message.message_id} reenviado al canal público.")
-
-    except Exception as e:
-        logging.error(f"Error al reenviar el post al canal público: {e}")
+        
+        for public_channel in ALL_PUBLIC_CHANNELS:
+            try:
+                if poster_url:
+                    await bot.send_photo(
+                        chat_id=public_channel,
+                        photo=poster_url,
+                        caption=caption_text,
+                        reply_markup=keyboard,
+                        parse_mode=ParseMode.MARKDOWN
+                    )
+                else:
+                    await bot.send_message(
+                        chat_id=public_channel,
+                        text=caption_text,
+                        reply_markup=keyboard,
+                        parse_mode=ParseMode.MARKDOWN,
+                        disable_web_page_preview=True
+                    )
+                logging.info(f"Enlace al post {original_message.message_id} reenviado al canal público {public_channel}.")
+            except Exception as e:
+                logging.error(f"Error al reenviar el post al canal público {public_channel}: {e}")
 
 async def send_movie_post(chat_id, movie_data, movie_link, post_keyboard, user_id_to_notify=None):
     text, poster_url, _ = create_movie_message(movie_data, movie_link, from_channel=True)
@@ -478,10 +491,8 @@ async def send_movie_post(chat_id, movie_data, movie_link, post_keyboard, user_i
             movie_data["last_message_id"] = message.message_id
             await save_movie_to_db(movie_data)
             
-            # AGREGA EL RETRASO AQUÍ PARA PERMITIR QUE EL ENLACE SE SINCRONICE
             await asyncio.sleep(5)
             
-            # REENVÍA EL POST AL CANAL PÚBLICO
             await forward_post_to_public_channel(message, movie_data)
 
         if user_id_to_notify:
@@ -558,8 +569,8 @@ async def start_command(message: types.Message, state: FSMContext):
             keyboard=[
                 [types.KeyboardButton(text="🔍 Buscar película"), types.KeyboardButton(text="🎞️ Estrenos")],
                 [types.KeyboardButton(text="✨ Recomiéndame"), types.KeyboardButton(text="📌 Pedir película")],
-                [types.KeyboardButton(text="🆘 Soporte")]
-            ],
+                [types.KeyboardButton(text="🆘 Soporte")
+            ]],
             resize_keyboard=True
         )
         
@@ -1841,8 +1852,9 @@ async def channel_content_scheduler():
                 meme_url, meme_caption = await get_random_meme()
                 if meme_url:
                     try:
-                        await bot.send_photo(TELEGRAM_MAIN_CHANNEL_ID, photo=meme_url, caption=meme_caption)
-                        logging.info("Meme publicado con éxito.")
+                        for channel_id in ALL_PUBLIC_CHANNELS:
+                            await bot.send_photo(channel_id, photo=meme_url, caption=meme_caption)
+                        logging.info("Meme publicado con éxito en los canales públicos.")
                     except Exception as e:
                         logging.error(f"Error al publicar un meme: {e}")
             elif content_type == "news":
@@ -1858,14 +1870,15 @@ async def channel_content_scheduler():
                     
                     poster_url = article.get("urlToImage")
                     
-                    try:
-                        if poster_url:
-                            await bot.send_photo(TELEGRAM_MAIN_CHANNEL_ID, photo=poster_url, caption=text, parse_mode=ParseMode.HTML)
-                        else:
-                            await bot.send_message(TELEGRAM_MAIN_CHANNEL_ID, text, parse_mode=ParseMode.HTML)
-                        logging.info("Noticia de cine publicada con éxito.")
-                    except Exception as e:
-                        logging.error(f"Error al publicar una noticia: {e}")
+                    for channel_id in ALL_PUBLIC_CHANNELS:
+                        try:
+                            if poster_url:
+                                await bot.send_photo(channel_id, photo=poster_url, caption=text, parse_mode=ParseMode.HTML)
+                            else:
+                                await bot.send_message(channel_id, text, parse_mode=ParseMode.HTML)
+                            logging.info(f"Noticia de cine publicada con éxito en el canal {channel_id}.")
+                        except Exception as e:
+                            logging.error(f"Error al publicar una noticia en el canal {channel_id}: {e}")
             await asyncio.sleep(4 * 3600)
         except Exception as e:
             logging.error(f"Error en el programador de contenido del canal: {e}")
