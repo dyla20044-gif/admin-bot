@@ -41,7 +41,6 @@ WELCOME_IMAGE_URL = "https://i.imgur.com/DJSUzQh.jpeg"
 MAIN_CHANNEL_INVITE_LINK = "https://t.me/click_para_ver"
 MAIN_CHANNEL_USERNAME = "click_para_ver"
 
-# Storage for scheduled posts and recent posts
 scheduled_posts = asyncio.Queue()
 recent_posts = deque(maxlen=20)
 user_requests = {}
@@ -54,18 +53,15 @@ VOTES_THRESHOLD = 500
 USER_REQUEST_LIMIT = 5
 user_daily_requests = {}
 
-# Géneros de TMDB
 GENRES = {
-    "Acción": 28, "Aventura": 12, "Animación": 16, "Comedia": 35, "Crimen": 80,
-    "Documental": 99, "Drama": 18, "Familia": 10751, "Fantasía": 14, "Historia": 36,
-    "Terror": 27, "Música": 10402, "Misterio": 9648, "Romance": 10749, "Ciencia ficción": 878,
-    "Película de TV": 10770, "Suspense": 53, "Guerra": 10752, "Western": 37
+    "Acción": 28, "Aventura": 12, "Animación": 16, "Comedia": 35, "Crimen": 80,
+    "Documental": 99, "Drama": 18, "Familia": 10751, "Fantasía": 14, "Historia": 36,
+    "Terror": 27, "Música": 10402, "Misterio": 9648, "Romance": 10749, "Ciencia ficción": 878,
+    "Película de TV": 10770, "Suspense": 53, "Guerra": 10752, "Western": 37
 }
 
-# Logging configuration
 logging.basicConfig(level=logging.INFO)
 
-# Bot, dispatcher, and database initialization
 bot = Bot(token=TELEGRAM_BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
@@ -1960,3 +1956,4 @@ async def main():
         
 if __name__ == "__main__":
     asyncio.run(main())
+
