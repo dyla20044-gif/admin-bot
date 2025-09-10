@@ -270,7 +270,7 @@ async def get_movies_by_actor(actor_name):
             async with session.get(url, params=params) as response:
                 response.raise_for_status()
                 actor = (await response.json()).get("results")[0] if (await response.json()).get("results") else None
-                if not actor:  
+                if not actor:
                     return [], 1
                 
                 person_id = actor.get("id")
@@ -398,12 +398,25 @@ def create_movie_message(movie_data, movie_link=None, from_channel=False):
 async def delete_old_post(movie_id_tmdb):
     movie_data = await get_movie_by_tmdb_id(movie_id_tmdb)
     if movie_data:
-        old_message_id = movie_data.get("last_message_id")
-        if old_message_id is not None:
+        old_message_id_main = movie_data.get("last_message_id")
+        old_message_id_public = movie_data.get("last_message_id_public")
+        
+        # Eliminar del canal principal
+        if old_message_id_main is not None:
             try:
-                await bot.delete_message(chat_id=TELEGRAM_MAIN_CHANNEL_ID, message_id=int(old_message_id))
+                await bot.delete_message(chat_id=TELEGRAM_MAIN_CHANNEL_ID, message_id=int(old_message_id_main))
+                logging.info(f"Mensaje {old_message_id_main} eliminado del canal principal.")
             except Exception as e:
-                logging.error(f"Error al intentar borrar el mensaje {old_message_id}: {e}")
+                logging.error(f"Error al intentar borrar el mensaje {old_message_id_main} del canal principal: {e}")
+        
+        # Eliminar del canal público
+        if old_message_id_public is not None:
+            try:
+                await bot.delete_message(chat_id=TELEGRAM_PUBLIC_CHANNEL_ID, message_id=int(old_message_id_public))
+                logging.info(f"Mensaje {old_message_id_public} eliminado del canal público.")
+            except Exception as e:
+                logging.error(f"Error al intentar borrar el mensaje {old_message_id_public} del canal público: {e}")
+
 
 async def forward_post_to_public_channel(original_message: types.Message, movie_data):
     if not TELEGRAM_PUBLIC_CHANNEL_ID:
@@ -433,9 +446,10 @@ async def forward_post_to_public_channel(original_message: types.Message, movie_
         ])
 
         poster_url = get_movie_poster_url(movie_data.get("poster_path"))
-
+        
+        public_message = None
         if poster_url:
-            await bot.send_photo(
+            public_message = await bot.send_photo(
                 chat_id=TELEGRAM_PUBLIC_CHANNEL_ID,
                 photo=poster_url,
                 caption=caption_text,
@@ -443,7 +457,7 @@ async def forward_post_to_public_channel(original_message: types.Message, movie_
                 parse_mode=ParseMode.MARKDOWN
             )
         else:
-            await bot.send_message(
+            public_message = await bot.send_message(
                 chat_id=TELEGRAM_PUBLIC_CHANNEL_ID,
                 text=caption_text,
                 reply_markup=keyboard,
@@ -452,9 +466,11 @@ async def forward_post_to_public_channel(original_message: types.Message, movie_
             )
             
         logging.info(f"Enlace al post {original_message.message_id} reenviado al canal público.")
+        return public_message.message_id
 
     except Exception as e:
         logging.error(f"Error al reenviar el post al canal público: {e}")
+        return None
 
 async def send_movie_post(chat_id, movie_data, movie_link, post_keyboard, user_id_to_notify=None):
     text, poster_url, _ = create_movie_message(movie_data, movie_link, from_channel=True)
@@ -476,13 +492,11 @@ async def send_movie_post(chat_id, movie_data, movie_link, post_keyboard, user_i
 
         if chat_id == TELEGRAM_MAIN_CHANNEL_ID:
             movie_data["last_message_id"] = message.message_id
-            await save_movie_to_db(movie_data)
-            
-            # AGREGA EL RETRASO AQUÍ PARA PERMITIR QUE EL ENLACE SE SINCRONICE
             await asyncio.sleep(5)
-            
-            # REENVÍA EL POST AL CANAL PÚBLICO
-            await forward_post_to_public_channel(message, movie_data)
+            public_message_id = await forward_post_to_public_channel(message, movie_data)
+            if public_message_id:
+                movie_data["last_message_id_public"] = public_message_id
+            await save_movie_to_db(movie_data)
 
         if user_id_to_notify:
             notification_message = (
@@ -614,11 +628,20 @@ async def admin_search_movie_to_add(message: types.Message, state: FSMContext):
             continue
             
         text, poster_url, _ = create_movie_message(tmdb_data)
-        
-        keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-            [types.InlineKeyboardButton(text="Agregar esta película", callback_data=f"admin_add_movie:{tmdb_id}")]
-        ])
-        
+
+        # AQUI ESTA EL CAMBIO: VERIFICA SI LA PELICULA YA EXISTE EN LA DB
+        movie_in_db = await get_movie_by_tmdb_id(tmdb_id)
+
+        if movie_in_db:
+            keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+                [types.InlineKeyboardButton(text="✅ Película ya en el catálogo", callback_data="movie_exists_dummy")],
+                [types.InlineKeyboardButton(text="📌 Publicar ahora", callback_data=f"publish_now_admin:{tmdb_id}")]
+            ])
+        else:
+            keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+                [types.InlineKeyboardButton(text="Agregar esta película", callback_data=f"admin_add_movie:{tmdb_id}")]
+            ])
+            
         try:
             if poster_url:
                 await bot.send_photo(
@@ -639,6 +662,10 @@ async def admin_search_movie_to_add(message: types.Message, state: FSMContext):
             logging.error(f"Error al enviar el resultado de búsqueda del administrador: {e}")
 
     await state.set_state(MovieUploadStates.waiting_for_admin_movie_name)
+
+@dp.callback_query(F.data == "movie_exists_dummy")
+async def dummy_callback_handler(callback_query: types.CallbackQuery):
+    await bot.answer_callback_query(callback_query.id, "Esta película ya está en el catálogo.", show_alert=True)
 
 @dp.callback_query(F.data.startswith("admin_add_movie:"))
 async def admin_add_movie_callback(callback_query: types.CallbackQuery, state: FSMContext):
@@ -704,26 +731,31 @@ async def publish_now_admin(callback_query: types.CallbackQuery):
     await bot.answer_callback_query(callback_query.id, "Publicando la película...")
     movie_id = int(callback_query.data.split(':')[-1])
     movie_info = await get_movie_by_tmdb_id(movie_id)
-    
+
     if not movie_info:
         await bot.send_message(callback_query.message.chat.id, "Error: película no encontrada en la base de datos.")
         await callback_query.answer()
         return
-        
+
     tmdb_data = await get_movie_details(movie_id)
-    
+    if not tmdb_data:
+        await bot.send_message(callback_query.message.chat.id, "Error: no se pudo obtener información de TMDB.")
+        return
+
+    await delete_old_post(movie_id)
+
     post_keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
         [types.InlineKeyboardButton(text="🎬 Ver ahora", url=movie_info.get("link"))],
         [types.InlineKeyboardButton(text="✨ Pedir otra película", url="https://t.me/sdmin_dy_bot?start=request")]
     ])
-    
+
     success, _ = await send_movie_post(TELEGRAM_MAIN_CHANNEL_ID, tmdb_data, movie_info.get("link"), post_keyboard)
-    
+
     if success:
         await bot.send_message(callback_query.message.chat.id, "✅ Película publicada con éxito.")
     else:
         await bot.send_message(callback_query.message.chat.id, "Ocurrió un error al publicar la película.")
-    
+
     await callback_query.answer()
 
 @dp.callback_query(F.data == "add_another_movie")
@@ -1339,6 +1371,8 @@ async def handle_movie_request_by_id(callback_query: types.CallbackQuery):
         await bot.send_message(callback_query.message.chat.id, f"La película **{movie_in_db.get('title')}** ya existe en el catálogo. Publicándola en el canal...")
         daily_requests[tmdb_id]["count"] += 1
         
+        await delete_old_post(tmdb_id)
+        
         text, poster_url, post_keyboard = create_movie_message(tmdb_data, movie_in_db.get("link"))
         success, message_id = await send_movie_post(TELEGRAM_MAIN_CHANNEL_ID, tmdb_data, movie_in_db.get("link"), post_keyboard)
         
@@ -1415,6 +1449,8 @@ async def handle_movie_request_callback(callback_query: types.CallbackQuery):
     elif movie_in_db:
         await bot.send_message(callback_query.message.chat.id, f"La película **{movie_in_db.get('title')}** ya existe en el catálogo. Publicándola en el canal...")
         daily_requests[tmdb_id]["count"] += 1
+        
+        await delete_old_post(tmdb_id)
         
         text, poster_url, post_keyboard = create_movie_message(tmdb_data, movie_in_db.get("link"))
         success, message_id = await send_movie_post(TELEGRAM_MAIN_CHANNEL_ID, tmdb_data, movie_in_db.get("link"), post_keyboard)
@@ -1793,7 +1829,9 @@ async def auto_post_scheduler():
                 tmdb_data = await get_movie_details(movie_id)
                 if tmdb_data:
                     logging.info("Hora de una nueva publicación automática.")
+                    
                     await delete_old_post(movie_id)
+
                     text, poster_url, post_keyboard = create_movie_message(tmdb_data, movie_info.get("link"))
                     success, _ = await send_movie_post(TELEGRAM_MAIN_CHANNEL_ID, tmdb_data, movie_info.get("link"), post_keyboard)
                     if success:
