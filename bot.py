@@ -117,6 +117,21 @@ def get_mongo_db_collection():
     except Exception as e:
         logging.error(f"Error al conectar con MongoDB: {e}")
         return None
+    
+def get_mongo_requests_collection():
+    try:
+        connection_string = os.getenv("DATABASE_URL")
+        if not connection_string:
+            logging.error("DATABASE_URL no está configurada. No se puede conectar a la base de datos.")
+            return None
+
+        client = motor.motor_asyncio.AsyncIOMotorClient(connection_string)
+        db = client["movies_database"]
+        collection = db["requests_collection"]
+        return collection
+    except Exception as e:
+        logging.error(f"Error al conectar con MongoDB: {e}")
+        return None
 
 async def save_movie_to_db(movie_data):
     collection = get_mongo_db_collection()
@@ -405,7 +420,6 @@ async def delete_old_post(movie_id_tmdb):
         if old_message_id_main is not None:
             try:
                 await bot.delete_message(chat_id=TELEGRAM_MAIN_CHANNEL_ID, message_id=int(old_message_id_main))
-                logging.info(f"Mensaje {old_message_id_main} eliminado del canal principal.")
             except Exception as e:
                 logging.error(f"Error al intentar borrar el mensaje {old_message_id_main} del canal principal: {e}")
         
@@ -413,7 +427,6 @@ async def delete_old_post(movie_id_tmdb):
         if old_message_id_public is not None:
             try:
                 await bot.delete_message(chat_id=TELEGRAM_PUBLIC_CHANNEL_ID, message_id=int(old_message_id_public))
-                logging.info(f"Mensaje {old_message_id_public} eliminado del canal público.")
             except Exception as e:
                 logging.error(f"Error al intentar borrar el mensaje {old_message_id_public} del canal público: {e}")
 
@@ -472,9 +485,11 @@ async def forward_post_to_public_channel(original_message: types.Message, movie_
         logging.error(f"Error al reenviar el post al canal público: {e}")
         return None
 
-async def send_movie_post(chat_id, movie_data, movie_link, post_keyboard, user_id_to_notify=None):
+async def send_movie_post(chat_id, movie_data, movie_link, post_keyboard, user_ids_to_notify=None):
     text, poster_url, _ = create_movie_message(movie_data, movie_link, from_channel=True)
-
+    if user_ids_to_notify is None:
+        user_ids_to_notify = []
+    
     try:
         if poster_url and (poster_url.startswith('http://') or poster_url.startswith('https://')):
             message = await bot.send_photo(
@@ -498,17 +513,21 @@ async def send_movie_post(chat_id, movie_data, movie_link, post_keyboard, user_i
                 movie_data["last_message_id_public"] = public_message_id
             await save_movie_to_db(movie_data)
 
-        if user_id_to_notify:
-            notification_message = (
-                f"🎉 ¡Tu película solicitada, **{movie_data.get('title')}**, ya está disponible en el canal!\n\n"
-                f"Haz clic en el botón de abajo para verla."
-            )
-            keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-                [types.InlineKeyboardButton(text="🎬 Ver ahora", url=f"https://t.me/{MAIN_CHANNEL_USERNAME}/{message.message_id}")],
-                [types.InlineKeyboardButton(text="➡️ Ir al Canal", url=MAIN_CHANNEL_INVITE_LINK)],
-                [types.InlineKeyboardButton(text="✨ Pedir otra película", url="https://t.me/sdmin_dy_bot?start=request")]
-            ])
-            await bot.send_message(user_id_to_notify, notification_message, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
+        if user_ids_to_notify:
+            for user_id in user_ids_to_notify:
+                notification_message = (
+                    f"🎉 ¡Tu película solicitada, **{movie_data.get('title')}**, ya está disponible en el canal!\n\n"
+                    f"Haz clic en el botón de abajo para verla."
+                )
+                keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+                    [types.InlineKeyboardButton(text="🎬 Ver ahora", url=f"https://t.me/{MAIN_CHANNEL_USERNAME}/{message.message_id}")],
+                    [types.InlineKeyboardButton(text="➡️ Ir al Canal", url=MAIN_CHANNEL_INVITE_LINK)],
+                    [types.InlineKeyboardButton(text="✨ Pedir otra película", url="https://t.me/sdmin_dy_bot?start=request")]
+                ])
+                try:
+                    await bot.send_message(user_id, notification_message, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
+                except Exception as e:
+                    logging.error(f"Error al notificar al usuario {user_id}: {e}")
 
         return True, message.message_id
     except Exception as e:
@@ -1277,7 +1296,6 @@ async def start_request_flow_callback(callback_query: types.CallbackQuery, state
 @dp.message(MovieRequestStates.waiting_for_movie_name_to_request)
 async def process_movie_name_for_request(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
-    user_daily_requests[user_id]["count"] += 1
     movie_title = message.text.strip()
     await message.reply(f"Buscando **{movie_title}** en la base de datos... 🔍")
     
@@ -1301,18 +1319,19 @@ async def process_movie_name_for_request(message: types.Message, state: FSMConte
         
         movie_in_db = await get_movie_by_tmdb_id(tmdb_id)
         
-        today = datetime.date.today().isoformat()
-        if tmdb_id not in daily_requests:
-            daily_requests[tmdb_id] = {"count": 0, "date": today}
-        if daily_requests[tmdb_id]["date"] != today:
-            daily_requests[tmdb_id]["count"] = 0
-            daily_requests[tmdb_id]["date"] = today
-        
-        if movie_in_db and daily_requests[tmdb_id]["count"] >= REQUEST_LIMIT:
+        requests_db = get_mongo_requests_collection()
+        request_in_db = await requests_db.find_one({"movie_id": tmdb_id, "requesters.user_id": user_id})
+
+        if movie_in_db:
             keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
                 [types.InlineKeyboardButton(text="🎬 Ver ahora", url=movie_in_db.get("link"))]
             ])
-            text += "\n\n🚫 Esta película ha superado el límite de solicitudes diarias. Haz clic en 'Ver ahora' para acceder al enlace."
+            text += "\n\n✅ Esta película ya está en el catálogo."
+        elif request_in_db:
+            keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+                [types.InlineKeyboardButton(text="✅ Ya solicitaste esta película", callback_data="already_requested_dummy")]
+            ])
+            text += "\n\n✅ Ya has solicitado esta película. Te notificaremos cuando esté disponible."
         else:
             keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
                 [types.InlineKeyboardButton(text="✅ Solicitar esta", callback_data=f"request_movie:{tmdb_id}:{message.from_user.id}")]
@@ -1339,182 +1358,151 @@ async def process_movie_name_for_request(message: types.Message, state: FSMConte
 
     await state.clear()
     
+@dp.callback_query(F.data == "already_requested_dummy")
+async def dummy_callback_handler_request(callback_query: types.CallbackQuery):
+    await bot.answer_callback_query(callback_query.id, "Ya has solicitado esta película.", show_alert=True)
+
 @dp.callback_query(F.data.startswith("request_movie_by_id:"))
 async def handle_movie_request_by_id(callback_query: types.CallbackQuery):
-    await bot.answer_callback_query(callback_query.id)
+    await bot.answer_callback_query(callback_query.id, "Procesando solicitud...")
     
     tmdb_id = int(callback_query.data.split(':')[1])
-    requester_id = callback_query.from_user.id
+    requester = callback_query.from_user
     
-    tmdb_data = await get_movie_details(tmdb_id)
-    if not tmdb_data:
-        await bot.send_message(callback_query.message.chat.id, "No se pudo obtener la información de la película. Por favor, inténtalo de nuevo.")
+    movie_in_db = await get_movie_by_tmdb_id(tmdb_id)
+    if movie_in_db:
+        await bot.send_message(requester.id, f"La película **{movie_in_db.get('title')}** ya existe en el catálogo.")
+        await bot.answer_callback_query(callback_query.id, "Película ya en el catálogo", show_alert=True)
         return
 
-    movie_in_db = await get_movie_by_tmdb_id(tmdb_id)
-    
-    today = datetime.date.today().isoformat()
-    if tmdb_id not in daily_requests:
-        daily_requests[tmdb_id] = {"count": 0, "date": today}
-    if daily_requests[tmdb_id]["date"] != today:
-        daily_requests[tmdb_id]["count"] = 0
-        daily_requests[tmdb_id]["date"] = today
+    requests_db = get_mongo_requests_collection()
+    request_data = await requests_db.find_one({"movie_id": tmdb_id})
+
+    if request_data:
+        # La solicitud ya existe, solo añadimos el nuevo solicitante
+        await requests_db.update_one(
+            {"movie_id": tmdb_id},
+            {"$addToSet": {"requesters": {"user_id": requester.id, "username": requester.username, "full_name": requester.full_name}}}
+        )
+        new_requester_name = requester.full_name
+        current_requesters = request_data.get("requesters", [])
+        requester_names = [r['full_name'] for r in current_requesters if r['user_id'] != requester.id]
+        requester_names.append(new_requester_name)
         
-    if movie_in_db and daily_requests[tmdb_id]["count"] >= REQUEST_LIMIT:
-        await bot.send_message(callback_query.message.chat.id, f"🚫 Esta película ha superado el límite de solicitudes diarias. Aquí tienes el enlace para verla:")
+        names_list = "\n".join([f"- {name}" for name in requester_names])
+
+        notification_text = (
+            f"🎬 **¡Nueva solicitud para una película que ya ha sido pedida!**\n\n"
+            f"**Película:** {request_data.get('movie_title')}\n"
+            f"**Solicitada por:**\n{names_list}\n\n"
+            f"**ID de la película:** `{tmdb_id}`"
+        )
+
         keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-            [types.InlineKeyboardButton(text="🎬 Ver ahora", url=movie_in_db.get("link"))]
+            [types.InlineKeyboardButton(text="📌 Publicar ahora esta película", callback_data=f"publish_now_from_request_db:{tmdb_id}")]
         ])
-        await bot.send_message(callback_query.message.chat.id, f"**{movie_in_db.get('title')}**", reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
-    
-    elif movie_in_db:
-        await bot.send_message(callback_query.message.chat.id, f"La película **{movie_in_db.get('title')}** ya existe en el catálogo. Publicándola en el canal...")
-        daily_requests[tmdb_id]["count"] += 1
         
-        await delete_old_post(tmdb_id)
-        
-        text, poster_url, post_keyboard = create_movie_message(tmdb_data, movie_in_db.get("link"))
-        success, message_id = await send_movie_post(TELEGRAM_MAIN_CHANNEL_ID, tmdb_data, movie_in_db.get("link"), post_keyboard)
-        
-        if success:
-            notification_message = (
-                f"Tu película fue publicada en el canal principal. Haz clic aquí para verla"
+        try:
+            await bot.edit_message_caption(
+                chat_id=ADMIN_ID,
+                message_id=request_data.get("admin_message_id"),
+                caption=notification_text,
+                reply_markup=keyboard,
+                parse_mode=ParseMode.MARKDOWN
             )
-            keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-                [types.InlineKeyboardButton(text="📢 Ver en el canal", url=f"https://t.me/{MAIN_CHANNEL_USERNAME}/{message_id}")]
-            ])
-            await bot.send_message(callback_query.from_user.id, notification_message, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
-    
+        except Exception as e:
+            logging.error(f"Error al editar el mensaje de solicitud consolidada: {e}")
+            await bot.send_message(ADMIN_ID, notification_text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
+
+        await bot.send_message(requester.id, f"✅ Tu solicitud para **{request_data.get('movie_title')}** ha sido añadida a la lista. ¡Te avisaremos cuando esté lista!")
+
     else:
+        # Es la primera solicitud para esta película
+        tmdb_data = await get_movie_details(tmdb_id)
+        if not tmdb_data:
+            await bot.send_message(requester.id, "No se pudo obtener la información de la película. Por favor, inténtalo de nuevo.")
+            return
+
+        requester_info = {"user_id": requester.id, "username": requester.username, "full_name": requester.full_name}
+        new_request = {
+            "movie_id": tmdb_id,
+            "movie_title": tmdb_data.get("title"),
+            "requesters": [requester_info],
+            "requested_at": datetime.datetime.now().isoformat(),
+            "admin_message_id": None
+        }
+
         poster_url = get_movie_poster_url(tmdb_data.get("poster_path"))
+        requester_names_str = f"- {requester.full_name} (@{requester.username if requester.username else 'N/A'})"
+        
         caption_text = (
             f"✨ **Nueva solicitud de película**\n\n"
-            f"El usuario **{callback_query.from_user.full_name}** (@{callback_query.from_user.username})\n"
-            f"ha solicitado: **{tmdb_data.get('title')}**\n"
-            f"ID de la película: `{tmdb_id}`\n\n"
+            f"**Película:** **{tmdb_data.get('title')}**\n"
+            f"**Solicitada por:**\n"
+            f"{requester_names_str}\n\n"
+            f"ID de la película: `{tmdb_id}`\n"
+            f"Total de solicitudes: 1"
         )
         
         keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-            [types.InlineKeyboardButton(text="📌 Publicar ahora esta película", callback_data=f"publish_now_from_trakt:{tmdb_id}:{requester_id}")]
+            [types.InlineKeyboardButton(text="📌 Publicar ahora esta película", callback_data=f"publish_now_from_request_db:{tmdb_id}")]
         ])
         
+        sent_message = None
         if poster_url:
-            await bot.send_photo(
+            sent_message = await bot.send_photo(
                 ADMIN_ID,
                 photo=poster_url,
                 caption=caption_text,
-                parse_mode=ParseMode.HTML,
+                parse_mode=ParseMode.MARKDOWN,
                 reply_markup=keyboard
             )
         else:
-            await bot.send_message(
+            sent_message = await bot.send_message(
                 ADMIN_ID,
                 text=caption_text,
-                parse_mode=ParseMode.HTML,
+                parse_mode=ParseMode.MARKDOWN,
                 reply_markup=keyboard
             )
-            
-        await bot.send_message(callback_query.message.chat.id, f"✅ Tu solicitud para **{tmdb_data.get('title')}** ha sido enviada al administrador. ¡Te avisaremos cuando esté lista!")
-
-
-@dp.callback_query(F.data.startswith("request_movie:"))
-async def handle_movie_request_callback(callback_query: types.CallbackQuery):
-    await bot.answer_callback_query(callback_query.id)
-    
-    parts = callback_query.data.split(':')
-    tmdb_id = int(parts[1])
-    requester_id = int(parts[2])
-    
-    tmdb_data = await get_movie_details(tmdb_id)
-    if not tmdb_data:
-        await bot.send_message(callback_query.message.chat.id, "No se pudo obtener la información de la película. Por favor, inténtalo de nuevo.")
-        return
-
-    movie_in_db = await get_movie_by_tmdb_id(tmdb_id)
-    
-    today = datetime.date.today().isoformat()
-    if tmdb_id not in daily_requests:
-        daily_requests[tmdb_id] = {"count": 0, "date": today}
-    if daily_requests[tmdb_id]["date"] != today:
-        daily_requests[tmdb_id]["count"] = 0
-        daily_requests[tmdb_id]["date"] = today
         
-    if movie_in_db and daily_requests[tmdb_id]["count"] >= REQUEST_LIMIT:
-        await bot.send_message(callback_query.message.chat.id, f"🚫 Esta película ha superado el límite de solicitudes diarias. Aquí tienes el enlace para verla:")
-        keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-            [types.InlineKeyboardButton(text="🎬 Ver ahora", url=movie_in_db.get("link"))]
-        ])
-        await bot.send_message(callback_query.message.chat.id, f"**{movie_in_db.get('title')}**", reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
-    
-    elif movie_in_db:
-        await bot.send_message(callback_query.message.chat.id, f"La película **{movie_in_db.get('title')}** ya existe en el catálogo. Publicándola en el canal...")
-        daily_requests[tmdb_id]["count"] += 1
-        
-        await delete_old_post(tmdb_id)
-        
-        text, poster_url, post_keyboard = create_movie_message(tmdb_data, movie_in_db.get("link"))
-        success, message_id = await send_movie_post(TELEGRAM_MAIN_CHANNEL_ID, tmdb_data, movie_in_db.get("link"), post_keyboard)
-        
-        if success:
-            notification_message = (
-                f"Tu película fue publicada en el canal principal. Haz clic aquí para verla"
+        if sent_message:
+            new_request["admin_message_id"] = sent_message.message_id
+            await requests_db.update_one(
+                {"movie_id": tmdb_id},
+                {"$set": new_request},
+                upsert=True
             )
-            keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-                [types.InlineKeyboardButton(text="📢 Ver en el canal", url=f"https://t.me/{MAIN_CHANNEL_USERNAME}/{message_id}")]
-            ])
-            await bot.send_message(callback_query.from_user.id, notification_message, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
-    
-    else:
-        poster_url = get_movie_poster_url(tmdb_data.get("poster_path"))
-        caption_text = (
-            f"✨ **Nueva solicitud de película**\n\n"
-            f"El usuario **{callback_query.from_user.full_name}** (@{callback_query.from_user.username})\n"
-            f"ha solicitado: **{tmdb_data.get('title')}**\n"
-            f"ID de la película: `{tmdb_id}`\n\n"
-        )
-        
-        keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-            [types.InlineKeyboardButton(text="📌 Publicar ahora esta película", callback_data=f"publish_now_from_trakt:{tmdb_id}:{requester_id}")]
-        ])
-        
-        if poster_url:
-            await bot.send_photo(
-                ADMIN_ID,
-                photo=poster_url,
-                caption=caption_text,
-                parse_mode=ParseMode.HTML,
-                reply_markup=keyboard
-            )
-        else:
-            await bot.send_message(
-                ADMIN_ID,
-                text=caption_text,
-                parse_mode=ParseMode.HTML,
-                reply_markup=keyboard
-            )
-            
-        await bot.send_message(callback_query.message.chat.id, f"✅ Tu solicitud para **{tmdb_data.get('title')}** ha sido enviada al administrador. ¡Te avisaremos cuando esté lista!")
+            await bot.send_message(requester.id, f"✅ Tu solicitud para **{tmdb_data.get('title')}** ha sido enviada al administrador. ¡Te avisaremos cuando esté lista!")
 
 
-@dp.callback_query(F.data.startswith("publish_now_from_trakt:"))
-async def publish_now_from_trakt_callback(callback_query: types.CallbackQuery, state: FSMContext):
+@dp.callback_query(F.data.startswith("publish_now_from_request_db:"))
+async def publish_now_from_request_db_callback(callback_query: types.CallbackQuery, state: FSMContext):
     if str(callback_query.from_user.id) != ADMIN_ID:
         await bot.answer_callback_query(callback_query.id, "No tienes permiso para esta acción.")
         return
+
     await bot.answer_callback_query(callback_query.id, "Preparando para agregar la película...", show_alert=True)
-    parts = callback_query.data.split(':')
-    tmdb_id = int(parts[1])
-    requester_id = int(parts[2])
-    tmdb_data = await get_movie_details(tmdb_id)
-    if not tmdb_data:
-        await bot.send_message(callback_query.message.chat.id, "No se pudo obtener la información completa de la película desde TMDB. Por favor, reinicie el proceso manualmente.")
+    tmdb_id = int(callback_query.data.split(':')[-1])
+
+    requests_db = get_mongo_requests_collection()
+    request_data = await requests_db.find_one({"movie_id": tmdb_id})
+
+    if not request_data:
+        await bot.send_message(ADMIN_ID, "Error: No se encontró la solicitud en la base de datos.")
         return
+        
     await state.update_data(
         tmdb_id=tmdb_id,
-        movie_title=tmdb_data.get("title"),
-        original_request_id=callback_query.message.message_id,
-        requester_id=requester_id
+        movie_title=request_data.get("movie_title"),
+        requesters=request_data.get("requesters"),
+        original_request_id=callback_query.message.message_id
     )
+
+    tmdb_data = await get_movie_details(tmdb_id)
+    if not tmdb_data:
+        await bot.send_message(ADMIN_ID, "No se pudo obtener la información completa de la película desde TMDB. Por favor, reinicie el proceso manualmente.")
+        return
+
     poster_url = get_movie_poster_url(tmdb_data.get("poster_path"))
     caption = f"Por favor, ahora envía el enlace de la película '{tmdb_data.get('title')}' para publicarla."
     
@@ -1538,19 +1526,24 @@ async def process_requested_movie_link(message: types.Message, state: FSMContext
         await message.reply("No tienes permiso para usar esta función.")
         await state.clear()
         return
+    
     movie_link = message.text.strip()
     user_data = await state.get_data()
     tmdb_id = user_data.get("tmdb_id")
     movie_title = user_data.get("movie_title")
+    requesters = user_data.get('requesters')
     original_request_id = user_data.get("original_request_id")
-    requester_id = user_data.get('requester_id')
+
     if not tmdb_id or not movie_title:
-        await message.reply("Ocurrió un error. Por favor, reenvía el enlace. Si el problema persiste, inicia el proceso de nuevo.")
+        await message.reply("Ocurrió un error. Por favor, reinicia el proceso.")
+        await state.clear()
         return
+    
     tmdb_data = await get_movie_details(tmdb_id)
     if not tmdb_data:
         await message.reply("No se pudo obtener la información de la película desde TMDB. Reenvía el enlace o cancela el proceso.")
         return
+    
     main_title = tmdb_data.get("title")
     names = [main_title]
     if tmdb_data.get("original_title") and tmdb_data.get("original_title") != main_title:
@@ -1561,28 +1554,26 @@ async def process_requested_movie_link(message: types.Message, state: FSMContext
         "names": ", ".join(names),
         "id": tmdb_id,
         "link": movie_link,
-        "last_message_id": None  
+        "last_message_id": None,
+        "added_at": datetime.datetime.now().isoformat()
     }
+
     await save_movie_to_db(new_movie)
     await delete_old_post(tmdb_id)
     text, poster_url, post_keyboard = create_movie_message(tmdb_data, movie_link)
-    success, message_id = await send_movie_post(TELEGRAM_MAIN_CHANNEL_ID, tmdb_data, movie_link, post_keyboard)
+    
+    requester_ids = [r['user_id'] for r in requesters]
+    success, message_id = await send_movie_post(TELEGRAM_MAIN_CHANNEL_ID, tmdb_data, movie_link, post_keyboard, user_ids_to_notify=requester_ids)
+    
     await state.clear()
+
     if success:
         await message.reply("✅ Película agregada a la base de datos y publicada con éxito.")
-        if requester_id:
-            notification_message = (
-                f"🎉 ¡Tu película solicitada, **{tmdb_data.get('title')}**, ya está disponible en el canal!\n\n"
-                f"Haz clic en el botón de abajo para verla."
-            )
-            keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-                [types.InlineKeyboardButton(text="🎬 Ver ahora", url=f"https://t.me/{MAIN_CHANNEL_USERNAME}/{message_id}")],
-                [types.InlineKeyboardButton(text="➡️ Ir al Canal", url=MAIN_CHANNEL_INVITE_LINK)],
-                [types.InlineKeyboardButton(text="✨ Pedir otra película", url="https://t.me/sdmin_dy_bot?start=request")]
-            ])
-            await bot.send_message(requester_id, notification_message, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
+        requests_db = get_mongo_requests_collection()
+        await requests_db.delete_one({"movie_id": tmdb_id})
     else:
         await message.reply("✅ Película agregada a la base de datos, pero ocurrió un error al publicarla en el canal.")
+    
     if original_request_id:
         try:
             await bot.delete_message(chat_id=message.chat.id, message_id=original_request_id)
