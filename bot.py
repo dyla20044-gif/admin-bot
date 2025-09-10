@@ -169,7 +169,7 @@ async def get_all_movies():
         return []
     
     try:
-        movies_list = await collection.find({}).sort("added_at", -1).to_list(None)
+        movies_list = await collection.find({}).sort([("added_at", -1)]).to_list(None)
         return movies_list
     except Exception as e:
         logging.error(f"Error al obtener todas las películas de MongoDB: {e}")
@@ -416,7 +416,8 @@ async def forward_post_to_public_channel(original_message: types.Message, movie_
         caption_text = (
             f"🎬 ¡Nueva película disponible!\n\n"
             f"🍿 **{movie_data.get('title')}**\n"
-            f"Presiona el botón 'Ver Película' para acceder al post original."
+            f"📝 {movie_data.get('overview', 'Sinopsis no disponible.')[:100]}...\n" # Mini sinopsis
+            f"Presiona los botones de abajo para acceder."
         )
 
         keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
@@ -484,6 +485,7 @@ async def send_movie_post(chat_id, movie_data, movie_link, post_keyboard, user_i
             )
             keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
                 [types.InlineKeyboardButton(text="🎬 Ver ahora", url=f"https://t.me/c/{str(TELEGRAM_MAIN_CHANNEL_ID).replace('-100', '')}/{message.message_id}")],
+                [types.InlineKeyboardButton(text="➡️ Ir al canal", url=MAIN_CHANNEL_INVITE_LINK)],
                 [types.InlineKeyboardButton(text="✨ Pedir otra película", url="https://t.me/sdmin_dy_bot?start=request")]
             ])
             await bot.send_message(user_id_to_notify, notification_message, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
@@ -492,6 +494,7 @@ async def send_movie_post(chat_id, movie_data, movie_link, post_keyboard, user_i
     except Exception as e:
         logging.error(f"Error al enviar la publicación: {e}")
         return False, None
+
 
 @dp.message(F.text == "🆘 Soporte")
 async def start_support_handler(message: types.Message, state: FSMContext):
@@ -812,6 +815,7 @@ async def handle_delete_movie(callback_query: types.CallbackQuery):
         await bot.send_message(callback_query.message.chat.id, f"✅ La película **{movie_to_delete.get('title')}** ha sido eliminada del catálogo y del canal.", parse_mode=ParseMode.MARKDOWN)
     else:
         await bot.send_message(callback_query.message.chat.id, "No se encontró la película para eliminar.")
+
 
 @dp.callback_query(F.data.startswith("publish_from_catalog:"))
 async def publish_from_catalog(callback_query: types.CallbackQuery):
@@ -1533,6 +1537,7 @@ async def process_requested_movie_link(message: types.Message, state: FSMContext
             )
             keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
                 [types.InlineKeyboardButton(text="🎬 Ver ahora", url=f"https://t.me/c/{str(TELEGRAM_MAIN_CHANNEL_ID).replace('-100', '')}/{message_id}")],
+                [types.InlineKeyboardButton(text="➡️ Ir al canal", url=MAIN_CHANNEL_INVITE_LINK)],
                 [types.InlineKeyboardButton(text="✨ Pedir otra película", url="https://t.me/sdmin_dy_bot?start=request")]
             ])
             await bot.send_message(requester_id, notification_message, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
