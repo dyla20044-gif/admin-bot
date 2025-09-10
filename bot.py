@@ -29,8 +29,8 @@ NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 # ----------------------------------------
 
 # Canal ID
-TELEGRAM_MAIN_CHANNEL_ID = -1002240787394  # Canal con enlaces de descarga
-TELEGRAM_PUBLIC_CHANNEL_ID = -1001945286271 # Canal público de redirección
+TELEGRAM_MAIN_CHANNEL_ID = -1002240787394
+TELEGRAM_PUBLIC_CHANNEL_ID = -1001945286271
 
 BASE_TMDB_URL = "https://api.themoviedb.org/3"
 POSTER_BASE_URL = "https://image.tmdb.org/t/p/w500"
@@ -1841,3 +1841,4 @@ async def main():
         
 if __name__ == "__main__":
     asyncio.run(main())
+
