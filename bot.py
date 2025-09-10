@@ -383,11 +383,17 @@ def create_movie_message(movie_data, movie_link=None, from_channel=False):
     if len(overview) > 250:
         overview = overview[:250] + "..."
 
+    # Sanitizar el texto para evitar errores de HTML.
+    safe_title = html.quote(title)
+    safe_overview = html.quote(overview)
+    safe_release_date = html.quote(release_date)
+    safe_vote_average = f"{vote_average:.1f}"
+
     text = (
-        f"<b>🎬 {title}</b>\n\n"
-        f"<i>Sinopsis:</i> {overview}\n\n"
-        f"📅 <b>Fecha de estreno:</b> {release_date}\n"
-        f"⭐ <b>Puntuación:</b> {vote_average:.1f}/10"
+        f"<b>🎬 {safe_title}</b>\n\n"
+        f"<i>Sinopsis:</i> {safe_overview}\n\n"
+        f"📅 <b>Fecha de estreno:</b> {safe_release_date}\n"
+        f"⭐ <b>Puntuación:</b> {safe_vote_average}/10"
     )
 
     if from_channel:
@@ -447,8 +453,8 @@ async def forward_post_to_public_channel(original_message: types.Message, movie_
             
         caption_text = (
             f"🎬 **¡Nueva película disponible!**\n\n"
-            f"🍿 **{movie_data.get('title')}**\n\n"
-            f"📝 {sinopsis}\n\n"
+            f"🍿 **{html.quote(movie_data.get('title'))}**\n\n"
+            f"📝 {html.quote(sinopsis)}\n\n"
             f"Presiona el botón 'Ver Película' para acceder al post original."
         )
 
@@ -516,7 +522,7 @@ async def send_movie_post(chat_id, movie_data, movie_link, post_keyboard, user_i
         if user_ids_to_notify:
             for user_id in user_ids_to_notify:
                 notification_message = (
-                    f"🎉 ¡Tu película solicitada, **{movie_data.get('title')}**, ya está disponible en el canal!\n\n"
+                    f"🎉 ¡Tu película solicitada, **{html.quote(movie_data.get('title'))}**, ya está disponible en el canal!\n\n"
                     f"Haz clic en el botón de abajo para verla."
                 )
                 keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
@@ -543,10 +549,10 @@ async def start_support_handler(message: types.Message, state: FSMContext):
 async def process_support_message(message: types.Message, state: FSMContext):
     user_info = message.from_user
     support_message = f"<b>Nuevo mensaje de soporte:</b>\n\n" \
-                      f"<b>De:</b> {user_info.full_name} (@{user_info.username if user_info.username else 'N/A'})\n" \
+                      f"<b>De:</b> {html.quote(user_info.full_name)} (@{html.quote(user_info.username) if user_info.username else 'N/A'})\n" \
                       f"<b>ID:</b> <code>{user_info.id}</code>\n" \
                       f"<b>Mensaje:</b>\n" \
-                      f"{message.text}"
+                      f"{html.quote(message.text)}"
     
     try:
         await bot.send_message(chat_id=ADMIN_ID, text=support_message, parse_mode=ParseMode.HTML)
@@ -630,7 +636,7 @@ async def add_movie_start_by_text(message: types.Message, state: FSMContext):
 @dp.message(MovieUploadStates.waiting_for_admin_movie_name)
 async def admin_search_movie_to_add(message: types.Message, state: FSMContext):
     search_query = message.text.strip()
-    await message.reply(f"Buscando '{search_query}'...")
+    await message.reply(f"Buscando '{html.quote(search_query)}'...")
 
     tmdb_results, _ = await get_movie_results_by_title(search_query)
 
@@ -701,7 +707,7 @@ async def admin_add_movie_callback(callback_query: types.CallbackQuery, state: F
     
     await bot.send_message(
         callback_query.message.chat.id,
-        f"Has seleccionado **{tmdb_data.get('title')}**. Por favor, envía el enlace de la película.",
+        f"Has seleccionado **{html.quote(tmdb_data.get('title'))}**. Por favor, envía el enlace de la película.",
         parse_mode=ParseMode.MARKDOWN
     )
 
@@ -738,7 +744,7 @@ async def admin_process_movie_link(message: types.Message, state: FSMContext):
     ])
     
     await message.reply(
-        f"✅ La película **{tmdb_data.get('title')}** se agregó correctamente. ¿Qué deseas hacer ahora?", 
+        f"✅ La película **{html.quote(tmdb_data.get('title'))}** se agregó correctamente. ¿Qué deseas hacer ahora?", 
         reply_markup=keyboard, 
         parse_mode=ParseMode.MARKDOWN
     )
@@ -817,7 +823,7 @@ async def send_catalog_page(chat_id, page):
             types.InlineKeyboardButton(text="🗑️ Eliminar película", callback_data=f"delete_movie:{tmdb_id}")]
         ])
         
-        message_text = f"**{title}**\nID: `{tmdb_id}`"
+        message_text = f"**{html.quote(title)}**\nID: `{tmdb_id}`"
         
         await bot.send_message(
             chat_id, 
@@ -868,7 +874,7 @@ async def handle_delete_movie(callback_query: types.CallbackQuery):
                 logging.warning(f"No se pudo eliminar el post del canal: {e}")
         
         await delete_movie_from_db(movie_id)
-        await bot.send_message(callback_query.message.chat.id, f"✅ La película **{movie_to_delete.get('title')}** ha sido eliminada del catálogo y del canal.", parse_mode=ParseMode.MARKDOWN)
+        await bot.send_message(callback_query.message.chat.id, f"✅ La película **{html.quote(movie_to_delete.get('title'))}** ha sido eliminada del catálogo y del canal.", parse_mode=ParseMode.MARKDOWN)
     else:
         await bot.send_message(callback_query.message.chat.id, "No se encontró la película para eliminar.")
 
@@ -994,7 +1000,7 @@ async def search_by_actor_start(callback_query: types.CallbackQuery, state: FSMC
 @dp.message(MovieRequestStates.waiting_for_actor_name)
 async def search_by_actor_process(message: types.Message, state: FSMContext):
     actor_name = message.text.strip()
-    await message.reply(f"Buscando películas de '{actor_name}'...")
+    await message.reply(f"Buscando películas de '{html.quote(actor_name)}'...")
     movies, total_pages = await get_movies_by_actor(actor_name)
     
     if not movies:
@@ -1042,7 +1048,7 @@ async def search_by_name_start(callback_query: types.CallbackQuery, state: FSMCo
 @dp.message(MovieRequestStates.waiting_for_search_query)
 async def search_by_name_process(message: types.Message, state: FSMContext):
     query = message.text.strip()
-    await message.reply(f"Buscando '{query}'...")
+    await message.reply(f"Buscando '{html.quote(query)}'...")
     results, total_pages = await get_movie_results_by_title(query)
     
     if not results:
@@ -1297,13 +1303,13 @@ async def start_request_flow_callback(callback_query: types.CallbackQuery, state
 async def process_movie_name_for_request(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     movie_title = message.text.strip()
-    await message.reply(f"Buscando **{movie_title}** en la base de datos... 🔍")
+    await message.reply(f"Buscando **{html.quote(movie_title)}** en la base de datos... 🔍")
     
     tmdb_results, _ = await get_movie_results_by_title(movie_title, page=1)
     
     if not tmdb_results:
         await message.reply(
-            f"Lo siento, no se encontraron resultados para **{movie_title}**. Intenta con un nombre diferente o más preciso."
+            f"Lo siento, no se encontraron resultados para **{html.quote(movie_title)}**. Intenta con un nombre diferente o más preciso."
         )
         return
         
@@ -1334,7 +1340,7 @@ async def process_movie_name_for_request(message: types.Message, state: FSMConte
             text += "\n\n✅ Ya has solicitado esta película. Te notificaremos cuando esté disponible."
         else:
             keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-                [types.InlineKeyboardButton(text="✅ Solicitar esta", callback_data=f"request_movie:{tmdb_id}:{message.from_user.id}")]
+                [types.InlineKeyboardButton(text="✅ Solicitar esta", callback_data=f"request_movie_by_id:{tmdb_id}")]
             ])
 
         try:
@@ -1371,7 +1377,7 @@ async def handle_movie_request_by_id(callback_query: types.CallbackQuery):
     
     movie_in_db = await get_movie_by_tmdb_id(tmdb_id)
     if movie_in_db:
-        await bot.send_message(requester.id, f"La película **{movie_in_db.get('title')}** ya existe en el catálogo.")
+        await bot.send_message(requester.id, f"La película **{html.quote(movie_in_db.get('title'))}** ya existe en el catálogo.")
         await bot.answer_callback_query(callback_query.id, "Película ya en el catálogo", show_alert=True)
         return
 
@@ -1389,11 +1395,11 @@ async def handle_movie_request_by_id(callback_query: types.CallbackQuery):
         requester_names = [r['full_name'] for r in current_requesters if r['user_id'] != requester.id]
         requester_names.append(new_requester_name)
         
-        names_list = "\n".join([f"- {name}" for name in requester_names])
+        names_list = "\n".join([f"- {html.quote(name)}" for name in requester_names])
 
         notification_text = (
             f"🎬 **¡Nueva solicitud para una película que ya ha sido pedida!**\n\n"
-            f"**Película:** {request_data.get('movie_title')}\n"
+            f"**Película:** {html.quote(request_data.get('movie_title'))}\n"
             f"**Solicitada por:**\n{names_list}\n\n"
             f"**ID de la película:** `{tmdb_id}`"
         )
@@ -1414,7 +1420,7 @@ async def handle_movie_request_by_id(callback_query: types.CallbackQuery):
             logging.error(f"Error al editar el mensaje de solicitud consolidada: {e}")
             await bot.send_message(ADMIN_ID, notification_text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
 
-        await bot.send_message(requester.id, f"✅ Tu solicitud para **{request_data.get('movie_title')}** ha sido añadida a la lista. ¡Te avisaremos cuando esté lista!")
+        await bot.send_message(requester.id, f"✅ Tu solicitud para **{html.quote(request_data.get('movie_title'))}** ha sido añadida a la lista. ¡Te avisaremos cuando esté lista!")
 
     else:
         # Es la primera solicitud para esta película
@@ -1433,11 +1439,11 @@ async def handle_movie_request_by_id(callback_query: types.CallbackQuery):
         }
 
         poster_url = get_movie_poster_url(tmdb_data.get("poster_path"))
-        requester_names_str = f"- {requester.full_name} (@{requester.username if requester.username else 'N/A'})"
+        requester_names_str = f"- {html.quote(requester.full_name)} (@{html.quote(requester.username) if requester.username else 'N/A'})"
         
         caption_text = (
             f"✨ **Nueva solicitud de película**\n\n"
-            f"**Película:** **{tmdb_data.get('title')}**\n"
+            f"**Película:** **{html.quote(tmdb_data.get('title'))}**\n"
             f"**Solicitada por:**\n"
             f"{requester_names_str}\n\n"
             f"ID de la película: `{tmdb_id}`\n"
@@ -1472,7 +1478,7 @@ async def handle_movie_request_by_id(callback_query: types.CallbackQuery):
                 {"$set": new_request},
                 upsert=True
             )
-            await bot.send_message(requester.id, f"✅ Tu solicitud para **{tmdb_data.get('title')}** ha sido enviada al administrador. ¡Te avisaremos cuando esté lista!")
+            await bot.send_message(requester.id, f"✅ Tu solicitud para **{html.quote(tmdb_data.get('title'))}** ha sido enviada al administrador. ¡Te avisaremos cuando esté lista!")
 
 
 @dp.callback_query(F.data.startswith("publish_now_from_request_db:"))
@@ -1504,7 +1510,7 @@ async def publish_now_from_request_db_callback(callback_query: types.CallbackQue
         return
 
     poster_url = get_movie_poster_url(tmdb_data.get("poster_path"))
-    caption = f"Por favor, ahora envía el enlace de la película '{tmdb_data.get('title')}' para publicarla."
+    caption = f"Por favor, ahora envía el enlace de la película '{html.quote(tmdb_data.get('title'))}' para publicarla."
     
     if poster_url:
         await bot.send_photo(
@@ -1689,7 +1695,7 @@ async def process_voting_movies_admin(message: types.Message, state: FSMContext)
         voting_data = {
             "movie_ids": [m.get("id") for m in selected_movies_details],
             "votes": {m.get("id"): 0 for m in selected_movies_details},
-            "voters": set()
+            "voters": []
         }
         
         await state.set_state(VotingStates.voting_active)
@@ -1698,7 +1704,7 @@ async def process_voting_movies_admin(message: types.Message, state: FSMContext)
         media_group = []
         for i, movie_info in enumerate(selected_movies_details):
             poster_url = f"{POSTER_BASE_URL}{movie_info.get('poster_path')}"
-            media_group.append(InputMediaPhoto(media=poster_url, caption=f"**Opción {i+1}: {movie_info.get('title')}**"))
+            media_group.append(InputMediaPhoto(media=poster_url, caption=f"**Opción {i+1}: {html.quote(movie_info.get('title'))}**"))
         
         keyboard_buttons = []
         for i, movie_info in enumerate(selected_movies_details):
@@ -1735,7 +1741,7 @@ async def show_voting_stats(callback_query: types.CallbackQuery, state: FSMConte
         movie_info = await get_movie_details(movie_id)
         movie_title = movie_info.get("title") if movie_info else f"Película ID: {movie_id}"
         remaining_votes = VOTES_THRESHOLD - vote_count
-        stats_text += f"▪️ {movie_title}: <b>{vote_count}</b> votos ({remaining_votes} para desbloquear)\n"
+        stats_text += f"▪️ {html.quote(movie_title)}: <b>{vote_count}</b> votos ({remaining_votes} para desbloquear)\n"
     
     await bot.send_message(callback_query.message.chat.id, stats_text, parse_mode=ParseMode.HTML)
 
@@ -1744,10 +1750,12 @@ async def show_voting_stats(callback_query: types.CallbackQuery, state: FSMConte
 async def process_vote(callback_query: types.CallbackQuery, state: FSMContext):
     user_id = callback_query.from_user.id
     user_data = await state.get_data()
-    voters = user_data.get("voters", set())
+    voters = user_data.get("voters", []) # Corregido: Usamos una lista para evitar el error
+    
     if user_id in voters:
         await bot.answer_callback_query(callback_query.id, "Ya has votado. ¡Gracias!")
         return
+    
     movie_id = int(callback_query.data.split("_")[1])
     votes = user_data.get("votes", {})
     
@@ -1756,7 +1764,7 @@ async def process_vote(callback_query: types.CallbackQuery, state: FSMContext):
     else:
         votes[movie_id] = 1
         
-    voters.add(user_id)
+    voters.append(user_id)
     
     user_data["votes"] = votes
     user_data["voters"] = voters
@@ -1767,7 +1775,7 @@ async def process_vote(callback_query: types.CallbackQuery, state: FSMContext):
         logging.info(f"Película {movie_id} alcanzó el umbral de votos. Publicando automáticamente.")
         tmdb_data = await get_movie_details(movie_id)
         if tmdb_data:
-            await bot.send_message(TELEGRAM_MAIN_CHANNEL_ID, f"🏆 ¡Felicidades! La película **{tmdb_data.get('title')}** alcanzó los {VOTES_THRESHOLD} votos y ha sido publicada. ¡Gracias por participar!")
+            await bot.send_message(TELEGRAM_MAIN_CHANNEL_ID, f"🏆 ¡Felicidades! La película **{html.quote(tmdb_data.get('title'))}** alcanzó los {VOTES_THRESHOLD} votos y ha sido publicada. ¡Gracias por participar!")
             movie_info = await get_movie_by_tmdb_id(movie_id)
             if movie_info and tmdb_data:
                 await delete_old_post(movie_id)
@@ -1788,7 +1796,7 @@ async def end_voting_task(chat_id, state):
     for movie_id, vote_count in final_data["votes"].items():
         movie_info = await get_movie_details(movie_id)
         movie_title = movie_info.get("title") if movie_info else f"Película ID: {movie_id}"
-        stats_text += f"▪️ {movie_title}: <b>{vote_count}</b> votos\n"
+        stats_text += f"▪️ {html.quote(movie_title)}: <b>{vote_count}</b> votos\n"
     
     await bot.send_message(chat_id, stats_text, parse_mode=ParseMode.HTML)
     
@@ -1796,7 +1804,7 @@ async def end_voting_task(chat_id, state):
     winning_movie_info = await get_movie_by_tmdb_id(winning_movie_id)
     
     if winning_movie_info and final_data["votes"][winning_movie_id] > 0:
-        await bot.send_message(chat_id, f"🏆 ¡La película ganadora es **{winning_movie_info.get('names', '').split(',')[0]}** con {final_data['votes'][winning_movie_id]} votos! Publicando ahora...")
+        await bot.send_message(chat_id, f"🏆 ¡La película ganadora es **{html.quote(winning_movie_info.get('names', '').split(',')[0])}** con {final_data['votes'][winning_movie_id]} votos! Publicando ahora...")
         tmdb_data = await get_movie_details(winning_movie_id)
         if tmdb_data:
             await delete_old_post(winning_movie_id)
