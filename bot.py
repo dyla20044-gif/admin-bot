@@ -28,8 +28,10 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 # ----------------------------------------
 
-# Channel ID
-TELEGRAM_CHANNEL_ID = -1001945286271
+# Canal ID
+TELEGRAM_MAIN_CHANNEL_ID = -1002240787394  # Canal con enlaces de descarga
+TELEGRAM_PUBLIC_CHANNEL_ID = -1001945286271 # Canal público de redirección
+
 BASE_TMDB_URL = "https://api.themoviedb.org/3"
 POSTER_BASE_URL = "https://image.tmdb.org/t/p/w500"
 TRAKT_BASE_URL = "https://api.trakt.tv"
@@ -45,6 +47,8 @@ ongoing_tasks = {}
 daily_requests = {}
 REQUEST_LIMIT = 3
 VOTES_THRESHOLD = 500
+USER_REQUEST_LIMIT = 5
+user_daily_requests = {}
 
 # Géneros de TMDB
 GENRES = {
@@ -393,7 +397,7 @@ async def delete_old_post(movie_id_tmdb):
         old_message_id = movie_data.get("last_message_id")
         if old_message_id is not None:
             try:
-                await bot.delete_message(chat_id=TELEGRAM_CHANNEL_ID, message_id=int(old_message_id))
+                await bot.delete_message(chat_id=TELEGRAM_MAIN_CHANNEL_ID, message_id=int(old_message_id))
             except Exception as e:
                 logging.error(f"Error al intentar borrar el mensaje {old_message_id}: {e}")
 
@@ -415,17 +419,20 @@ async def send_movie_post(chat_id, movie_data, movie_link, post_keyboard, user_i
                 reply_markup=post_keyboard
             )
 
-        if chat_id == TELEGRAM_CHANNEL_ID:
+        if chat_id == TELEGRAM_MAIN_CHANNEL_ID:
             movie_data["last_message_id"] = message.message_id
             await save_movie_to_db(movie_data)
-        
+            
+            # REENVÍA EL POST AL CANAL PÚBLICO
+            await forward_post_to_public_channel(message, movie_data)
+
         if user_id_to_notify:
             notification_message = (
                 f"🎉 ¡Tu película solicitada, **{movie_data.get('title')}**, ya está disponible en el canal!\n\n"
                 f"Haz clic en el botón de abajo para verla."
             )
             keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-                [types.InlineKeyboardButton(text="🎬 Ver ahora", url=f"https://t.me/c/{str(TELEGRAM_CHANNEL_ID).replace('-100', '')}/{message.message_id}")],
+                [types.InlineKeyboardButton(text="🎬 Ver ahora", url=f"https://t.me/c/{str(TELEGRAM_MAIN_CHANNEL_ID).replace('-100', '')}/{message.message_id}")],
                 [types.InlineKeyboardButton(text="✨ Pedir otra película", url="https://t.me/sdmin_dy_bot?start=request")]
             ])
             await bot.send_message(user_id_to_notify, notification_message, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
@@ -434,6 +441,50 @@ async def send_movie_post(chat_id, movie_data, movie_link, post_keyboard, user_i
     except Exception as e:
         logging.error(f"Error al enviar la publicación: {e}")
         return False, None
+
+# --- NUEVA FUNCIÓN PARA REENVIAR AL CANAL PÚBLICO ---
+async def forward_post_to_public_channel(original_message: types.Message, movie_data):
+    if not TELEGRAM_PUBLIC_CHANNEL_ID:
+        logging.warning("TELEGRAM_PUBLIC_CHANNEL_ID no está configurado. No se puede reenviar el post.")
+        return
+
+    try:
+        channel_id_for_link = str(original_message.chat.id).replace('-100', '')
+        post_link = f"https://t.me/c/{channel_id_for_link}/{original_message.message_id}"
+        
+        # Prepara el mensaje y la foto para el canal público
+        caption_text = (
+            f"🎉 **¡Nueva película disponible!**\n\n"
+            f"🎬 **{movie_data.get('title')}**\n"
+            f"Haz clic en el botón de abajo para verla en nuestro canal principal."
+        )
+
+        keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+            [types.InlineKeyboardButton(text="🎬 Ver Película", url=post_link)],
+            [types.InlineKeyboardButton(text="✨ Pedir una película", url="https://t.me/sdmin_dy_bot?start=request")]
+        ])
+
+        poster_url = get_movie_poster_url(movie_data.get("poster_path"))
+
+        if poster_url:
+            await bot.send_photo(
+                chat_id=TELEGRAM_PUBLIC_CHANNEL_ID,
+                photo=poster_url,
+                caption=caption_text,
+                reply_markup=keyboard
+            )
+        else:
+            await bot.send_message(
+                chat_id=TELEGRAM_PUBLIC_CHANNEL_ID,
+                text=caption_text,
+                reply_markup=keyboard,
+                disable_web_page_preview=True
+            )
+            
+        logging.info(f"Enlace al post {original_message.message_id} reenviado al canal público.")
+
+    except Exception as e:
+        logging.error(f"Error al reenviar el post al canal público: {e}")
 
 @dp.message(F.text == "🆘 Soporte")
 async def start_support_handler(message: types.Message, state: FSMContext):
@@ -490,9 +541,9 @@ async def start_command(message: types.Message, state: FSMContext):
         
         user_keyboard = types.ReplyKeyboardMarkup(
             keyboard=[
-                [types.KeyboardButton(text="🔍 Buscar película"), types.KeyboardButton(text="✨ Recomiéndame")],
-                [types.KeyboardButton(text="🎞️ Estrenos"), types.KeyboardButton(text="📰 Noticias"), types.KeyboardButton(text="🆘 Soporte")],
-                [types.KeyboardButton(text="✨ Solicitar una película")]
+                [types.KeyboardButton(text="🔍 Buscar película"), types.KeyboardButton(text="🎞️ Estrenos")],
+                [types.KeyboardButton(text="✨ Recomiéndame"), types.KeyboardButton(text="📌 Pedir película")],
+                [types.KeyboardButton(text="🆘 Soporte")]
             ],
             resize_keyboard=True
         )
@@ -751,7 +802,7 @@ async def publish_from_catalog(callback_query: types.CallbackQuery):
         return
     await delete_old_post(movie_id)
     text, poster_url, post_keyboard = create_movie_message(tmdb_data, movie_info.get("link"))
-    success, _ = await send_movie_post(TELEGRAM_CHANNEL_ID, tmdb_data, movie_info.get("link"), post_keyboard)
+    success, _ = await send_movie_post(TELEGRAM_MAIN_CHANNEL_ID, tmdb_data, movie_info.get("link"), post_keyboard)
     if success:
         await bot.answer_callback_query(callback_query.id, "✅ Película publicada con éxito.", show_alert=True)
     else:
@@ -1127,9 +1178,18 @@ async def navigate_genre_page(callback_query: types.CallbackQuery):
     await show_movies_by_genre(callback_query, page=page)
 
 
-@dp.message(F.text == "✨ Solicitar una película")
+@dp.message(F.text == "📌 Pedir película")
 async def start_request_flow(message: types.Message, state: FSMContext):
-    await state.clear()
+    user_id = message.from_user.id
+    today = datetime.date.today().isoformat()
+    if user_id not in user_daily_requests or user_daily_requests[user_id]["date"] != today:
+        user_daily_requests[user_id] = {"count": 0, "date": today}
+    
+    if user_daily_requests[user_id]["count"] >= USER_REQUEST_LIMIT:
+        await message.reply("🚫 Has alcanzado el límite de solicitudes diarias. Inténtalo de nuevo mañana.")
+        await state.clear()
+        return
+        
     await state.set_state(MovieRequestStates.waiting_for_movie_name_to_request)
     await message.reply(
         "Por favor, escribe el nombre de la película que te gustaría solicitar. Buscaremos las mejores opciones para ti."
@@ -1152,6 +1212,8 @@ async def start_request_flow_callback(callback_query: types.CallbackQuery, state
 
 @dp.message(MovieRequestStates.waiting_for_movie_name_to_request)
 async def process_movie_name_for_request(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    user_daily_requests[user_id]["count"] += 1
     movie_title = message.text.strip()
     await message.reply(f"Buscando **{movie_title}** en la base de datos... 🔍")
     
@@ -1246,17 +1308,17 @@ async def handle_movie_request_by_id(callback_query: types.CallbackQuery):
         daily_requests[tmdb_id]["count"] += 1
         
         text, poster_url, post_keyboard = create_movie_message(tmdb_data, movie_in_db.get("link"))
-        success, message_id = await send_movie_post(TELEGRAM_CHANNEL_ID, tmdb_data, movie_in_db.get("link"), post_keyboard)
+        success, message_id = await send_movie_post(TELEGRAM_MAIN_CHANNEL_ID, tmdb_data, movie_in_db.get("link"), post_keyboard)
         
         if success:
             notification_message = (
                 f"Tu película fue publicada en el canal principal. Haz clic aquí para verla"
             )
             keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-                [types.InlineKeyboardButton(text="📢 Ver en el canal", url=f"https://t.me/+C8xLlSwkqSc3ZGU5")]
+                [types.InlineKeyboardButton(text="📢 Ver en el canal", url=f"https://t.me/c/{str(TELEGRAM_MAIN_CHANNEL_ID).replace('-100', '')}/{message_id}")]
             ])
             await bot.send_message(callback_query.from_user.id, notification_message, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
-        
+    
     else:
         poster_url = get_movie_poster_url(tmdb_data.get("poster_path"))
         caption_text = (
@@ -1302,7 +1364,7 @@ async def handle_movie_request_callback(callback_query: types.CallbackQuery):
         await bot.send_message(callback_query.message.chat.id, "No se pudo obtener la información de la película. Por favor, inténtalo de nuevo.")
         return
 
-    movie_info_db = await get_movie_by_tmdb_id(tmdb_id)
+    movie_in_db = await get_movie_by_tmdb_id(tmdb_id)
     
     today = datetime.date.today().isoformat()
     if tmdb_id not in daily_requests:
@@ -1323,17 +1385,17 @@ async def handle_movie_request_callback(callback_query: types.CallbackQuery):
         daily_requests[tmdb_id]["count"] += 1
         
         text, poster_url, post_keyboard = create_movie_message(tmdb_data, movie_in_db.get("link"))
-        success, message_id = await send_movie_post(TELEGRAM_CHANNEL_ID, tmdb_data, movie_in_db.get("link"), post_keyboard)
+        success, message_id = await send_movie_post(TELEGRAM_MAIN_CHANNEL_ID, tmdb_data, movie_in_db.get("link"), post_keyboard)
         
         if success:
             notification_message = (
                 f"Tu película fue publicada en el canal principal. Haz clic aquí para verla"
             )
             keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-                [types.InlineKeyboardButton(text="📢 Ver en el canal", url=f"https://t.me/+C8xLlSwkqSc3ZGU5")]
+                [types.InlineKeyboardButton(text="📢 Ver en el canal", url=f"https://t.me/c/{str(TELEGRAM_MAIN_CHANNEL_ID).replace('-100', '')}/{message_id}")]
             ])
             await bot.send_message(callback_query.from_user.id, notification_message, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
-        
+    
     else:
         poster_url = get_movie_poster_url(tmdb_data.get("poster_path"))
         caption_text = (
@@ -1431,12 +1493,12 @@ async def process_requested_movie_link(message: types.Message, state: FSMContext
         "names": ", ".join(names),
         "id": tmdb_id,
         "link": movie_link,
-        "last_message_id": None 
+        "last_message_id": None  
     }
     await save_movie_to_db(new_movie)
     await delete_old_post(tmdb_id)
     text, poster_url, post_keyboard = create_movie_message(tmdb_data, movie_link)
-    success, message_id = await send_movie_post(TELEGRAM_CHANNEL_ID, tmdb_data, movie_link, post_keyboard)
+    success, message_id = await send_movie_post(TELEGRAM_MAIN_CHANNEL_ID, tmdb_data, movie_link, post_keyboard)
     await state.clear()
     if success:
         await message.reply("✅ Película agregada a la base de datos y publicada con éxito.")
@@ -1446,7 +1508,7 @@ async def process_requested_movie_link(message: types.Message, state: FSMContext
                 f"Haz clic en el botón de abajo para verla."
             )
             keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-                [types.InlineKeyboardButton(text="🎬 Ver ahora", url=f"https://t.me/c/{str(TELEGRAM_CHANNEL_ID).replace('-100', '')}/{message_id}")],
+                [types.InlineKeyboardButton(text="🎬 Ver ahora", url=f"https://t.me/c/{str(TELEGRAM_MAIN_CHANNEL_ID).replace('-100', '')}/{message_id}")],
                 [types.InlineKeyboardButton(text="✨ Pedir otra película", url="https://t.me/sdmin_dy_bot?start=request")]
             ])
             await bot.send_message(requester_id, notification_message, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
@@ -1474,12 +1536,12 @@ async def publish_now_manual(callback_query: types.CallbackQuery):
     
     await delete_old_post(tmdb_id)
     text, poster_url, post_keyboard = create_movie_message(tmdb_data, movie_info.get("link"))
-    success, message_id = await send_movie_post(TELEGRAM_CHANNEL_ID, tmdb_data, movie_info.get("link"), post_keyboard)
+    success, message_id = await send_movie_post(TELEGRAM_MAIN_CHANNEL_ID, tmdb_data, movie_info.get("link"), post_keyboard)
     
     if success:
         notification_message = "✅ Tu película fue publicada en el canal principal. Haz clic aquí para verla."
         keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-            [types.InlineKeyboardButton(text="📢 Ver en el canal", url=f"https://t.me/+C8xLlSwkqSc3ZGU5")]
+            [types.InlineKeyboardButton(text="📢 Ver en el canal", url=f"https://t.me/c/{str(TELEGRAM_MAIN_CHANNEL_ID).replace('-100', '')}/{message_id}")]
         ])
         await bot.send_message(callback_query.from_user.id, notification_message, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
     else:
@@ -1584,9 +1646,9 @@ async def process_voting_movies_admin(message: types.Message, state: FSMContext)
         keyboard_buttons.append([types.InlineKeyboardButton(text="📊 Ver estadísticas", callback_data="show_voting_stats")])
         keyboard = types.InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
         
-        await bot.send_media_group(chat_id=TELEGRAM_CHANNEL_ID, media=media_group)
+        await bot.send_media_group(chat_id=TELEGRAM_MAIN_CHANNEL_ID, media=media_group)
         voting_message = await bot.send_message(
-            chat_id=TELEGRAM_CHANNEL_ID,
+            chat_id=TELEGRAM_MAIN_CHANNEL_ID,
             text="🗳️ ¡Vota por la próxima película! La película que alcance 500 votos primero se publicará en el canal.",
             reply_markup=keyboard,
             parse_mode=ParseMode.MARKDOWN
@@ -1645,12 +1707,12 @@ async def process_vote(callback_query: types.CallbackQuery, state: FSMContext):
         logging.info(f"Película {movie_id} alcanzó el umbral de votos. Publicando automáticamente.")
         tmdb_data = await get_movie_details(movie_id)
         if tmdb_data:
-            await bot.send_message(TELEGRAM_CHANNEL_ID, f"🏆 ¡Felicidades! La película **{tmdb_data.get('title')}** alcanzó los {VOTES_THRESHOLD} votos y ha sido publicada. ¡Gracias por participar!")
+            await bot.send_message(TELEGRAM_MAIN_CHANNEL_ID, f"🏆 ¡Felicidades! La película **{tmdb_data.get('title')}** alcanzó los {VOTES_THRESHOLD} votos y ha sido publicada. ¡Gracias por participar!")
             movie_info = await get_movie_by_tmdb_id(movie_id)
             if movie_info and tmdb_data:
                 await delete_old_post(movie_id)
                 text, poster_url, post_keyboard = create_movie_message(tmdb_data, movie_info.get("link"))
-                await send_movie_post(TELEGRAM_CHANNEL_ID, tmdb_data, movie_info.get("link"), post_keyboard)
+                await send_movie_post(TELEGRAM_MAIN_CHANNEL_ID, tmdb_data, movie_info.get("link"), post_keyboard)
             
         await state.clear()
 
@@ -1679,7 +1741,7 @@ async def end_voting_task(chat_id, state):
         if tmdb_data:
             await delete_old_post(winning_movie_id)
             text, poster_url, post_keyboard = create_movie_message(tmdb_data, winning_movie_info.get("link"))
-            await send_movie_post(TELEGRAM_CHANNEL_ID, tmdb_data, winning_movie_info.get("link"), post_keyboard)
+            await send_movie_post(TELEGRAM_MAIN_CHANNEL_ID, tmdb_data, winning_movie_info.get("link"), post_keyboard)
     else:
         await bot.send_message(chat_id, "La votación ha terminado sin votos. ¡Intenta de nuevo más tarde!")
 
@@ -1700,7 +1762,7 @@ async def auto_post_scheduler():
                     logging.info("Hora de una nueva publicación automática.")
                     await delete_old_post(movie_id)
                     text, poster_url, post_keyboard = create_movie_message(tmdb_data, movie_info.get("link"))
-                    success, _ = await send_movie_post(TELEGRAM_CHANNEL_ID, tmdb_data, movie_info.get("link"), post_keyboard)
+                    success, _ = await send_movie_post(TELEGRAM_MAIN_CHANNEL_ID, tmdb_data, movie_info.get("link"), post_keyboard)
                     if success:
                         logging.info(f"Publicación automática de '{tmdb_data.get('title')}' enviada con éxito.")
                     else:
@@ -1725,7 +1787,7 @@ async def check_scheduled_posts():
                         if tmdb_data:
                             await delete_old_post(movie_info.get("id"))
                             text, poster_url, post_keyboard = create_movie_message(tmdb_data, movie_info.get("link"))
-                            success, _ = await send_movie_post(TELEGRAM_CHANNEL_ID, tmdb_data, movie_info.get("link"), post_keyboard)
+                            success, _ = await send_movie_post(TELEGRAM_MAIN_CHANNEL_ID, tmdb_data, movie_info.get("link"), post_keyboard)
                             if success:
                                 logging.info(f"Publicación programada de '{tmdb_data.get('title')}' enviada con éxito.")
                             else:
@@ -1746,7 +1808,7 @@ async def channel_content_scheduler():
                 meme_url, meme_caption = await get_random_meme()
                 if meme_url:
                     try:
-                        await bot.send_photo(TELEGRAM_CHANNEL_ID, photo=meme_url, caption=meme_caption)
+                        await bot.send_photo(TELEGRAM_MAIN_CHANNEL_ID, photo=meme_url, caption=meme_caption)
                         logging.info("Meme publicado con éxito.")
                     except Exception as e:
                         logging.error(f"Error al publicar un meme: {e}")
@@ -1765,9 +1827,9 @@ async def channel_content_scheduler():
                     
                     try:
                         if poster_url:
-                            await bot.send_photo(TELEGRAM_CHANNEL_ID, photo=poster_url, caption=text, parse_mode=ParseMode.HTML)
+                            await bot.send_photo(TELEGRAM_MAIN_CHANNEL_ID, photo=poster_url, caption=text, parse_mode=ParseMode.HTML)
                         else:
-                            await bot.send_message(TELEGRAM_CHANNEL_ID, text, parse_mode=ParseMode.HTML)
+                            await bot.send_message(TELEGRAM_MAIN_CHANNEL_ID, text, parse_mode=ParseMode.HTML)
                         logging.info("Noticia de cine publicada con éxito.")
                     except Exception as e:
                         logging.error(f"Error al publicar una noticia: {e}")
@@ -1823,4 +1885,3 @@ async def main():
         
 if __name__ == "__main__":
     asyncio.run(main())
-
