@@ -1386,22 +1386,30 @@ async def handle_movie_request_by_id(callback_query: types.CallbackQuery):
 
     if request_data:
         # La solicitud ya existe, solo añadimos el nuevo solicitante
+        is_new_requester = await requests_db.find_one({"movie_id": tmdb_id, "requesters.user_id": requester.id}) is None
+        
+        if not is_new_requester:
+            await bot.send_message(requester.id, f"Ya habías solicitado esta película. Te notificaremos cuando esté lista.")
+            await bot.answer_callback_query(callback_query.id, "Ya habías solicitado esta película.", show_alert=True)
+            return
+
         await requests_db.update_one(
             {"movie_id": tmdb_id},
-            {"$addToSet": {"requesters": {"user_id": requester.id, "username": requester.username, "full_name": requester.full_name}}}
+            {"$push": {"requesters": {"user_id": requester.id, "username": requester.username, "full_name": requester.full_name}}}
         )
-        new_requester_name = requester.full_name
-        current_requesters = request_data.get("requesters", [])
-        requester_names = [r['full_name'] for r in current_requesters if r['user_id'] != requester.id]
-        requester_names.append(new_requester_name)
+
+        updated_request_data = await requests_db.find_one({"movie_id": tmdb_id})
         
+        requester_names = [r['full_name'] for r in updated_request_data.get("requesters", [])]
         names_list = "\n".join([f"- {html.quote(name)}" for name in requester_names])
+        total_requests = len(requester_names)
 
         notification_text = (
             f"🎬 **¡Nueva solicitud para una película que ya ha sido pedida!**\n\n"
-            f"**Película:** {html.quote(request_data.get('movie_title'))}\n"
+            f"**Película:** {html.quote(updated_request_data.get('movie_title'))}\n"
             f"**Solicitada por:**\n{names_list}\n\n"
-            f"**ID de la película:** `{tmdb_id}`"
+            f"**ID de la película:** `{tmdb_id}`\n"
+            f"Total de solicitudes: {total_requests}"
         )
 
         keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
@@ -1411,7 +1419,7 @@ async def handle_movie_request_by_id(callback_query: types.CallbackQuery):
         try:
             await bot.edit_message_caption(
                 chat_id=ADMIN_ID,
-                message_id=request_data.get("admin_message_id"),
+                message_id=updated_request_data.get("admin_message_id"),
                 caption=notification_text,
                 reply_markup=keyboard,
                 parse_mode=ParseMode.MARKDOWN
@@ -1420,7 +1428,7 @@ async def handle_movie_request_by_id(callback_query: types.CallbackQuery):
             logging.error(f"Error al editar el mensaje de solicitud consolidada: {e}")
             await bot.send_message(ADMIN_ID, notification_text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
 
-        await bot.send_message(requester.id, f"✅ Tu solicitud para **{html.quote(request_data.get('movie_title'))}** ha sido añadida a la lista. ¡Te avisaremos cuando esté lista!")
+        await bot.send_message(requester.id, f"✅ Tu solicitud para **{html.quote(updated_request_data.get('movie_title'))}** ha sido añadida a la lista. ¡Te avisaremos cuando esté lista!")
 
     else:
         # Es la primera solicitud para esta película
