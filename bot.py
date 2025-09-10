@@ -1052,8 +1052,9 @@ async def search_by_name_process(message: types.Message, state: FSMContext):
     results, total_pages = await get_movie_results_by_title(query)
     
     if not results:
-        await message.reply("No se encontraron películas con ese nombre. Intenta con otro.")
-        await state.clear()
+        await message.reply(
+            f"Lo siento, no se encontraron resultados para **{html.quote(query)}**. Intenta con un nombre diferente o más preciso."
+        )
         return
         
     for movie in results[:SEARCH_RESULTS_PER_PAGE]:
@@ -1383,7 +1384,7 @@ async def handle_movie_request_by_id(callback_query: types.CallbackQuery):
 
     requests_db = get_mongo_requests_collection()
     request_data = await requests_db.find_one({"movie_id": tmdb_id})
-
+    
     if request_data:
         # La solicitud ya existe, solo añadimos el nuevo solicitante
         is_new_requester = await requests_db.find_one({"movie_id": tmdb_id, "requesters.user_id": requester.id}) is None
@@ -1758,7 +1759,7 @@ async def show_voting_stats(callback_query: types.CallbackQuery, state: FSMConte
 async def process_vote(callback_query: types.CallbackQuery, state: FSMContext):
     user_id = callback_query.from_user.id
     user_data = await state.get_data()
-    voters = user_data.get("voters", []) # Corregido: Usamos una lista para evitar el error
+    voters = user_data.get("voters", [])
     
     if user_id in voters:
         await bot.answer_callback_query(callback_query.id, "Ya has votado. ¡Gracias!")
