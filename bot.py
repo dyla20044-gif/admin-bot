@@ -39,6 +39,7 @@ WELCOME_IMAGE_URL = "https://i.imgur.com/DJSUzQh.jpeg"
 
 # Enlace de invitación del canal principal
 MAIN_CHANNEL_INVITE_LINK = "https://t.me/click_para_ver"
+MAIN_CHANNEL_USERNAME = "click_para_ver"
 
 # Storage for scheduled posts and recent posts
 scheduled_posts = asyncio.Queue()
@@ -169,7 +170,7 @@ async def get_all_movies():
         return []
     
     try:
-        movies_list = await collection.find({}).sort([("added_at", -1)]).to_list(None)
+        movies_list = await collection.find({}).sort("added_at", -1).to_list(None)
         return movies_list
     except Exception as e:
         logging.error(f"Error al obtener todas las películas de MongoDB: {e}")
@@ -185,6 +186,7 @@ async def delete_movie_from_db(movie_id):
         logging.info(f"Película con ID {movie_id} eliminada de MongoDB.")
     except Exception as e:
         logging.error(f"Error al eliminar la película de MongoDB: {e}")
+
 
 # --- Funciones de TMDB y Trakt (aiohttp - Asíncrono) ---
 
@@ -409,15 +411,19 @@ async def forward_post_to_public_channel(original_message: types.Message, movie_
         return
 
     try:
-        # Enlace al post específico en el canal principal
-        channel_id_for_link = str(original_message.chat.id).replace('-100', '')
-        post_link = f"https://t.me/c/{channel_id_for_link}/{original_message.message_id}"
+        # Enlace al post específico en el canal principal usando el nombre de usuario
+        post_link = f"https://t.me/{MAIN_CHANNEL_USERNAME}/{original_message.message_id}"
         
+        # Obtener la sinopsis y acortarla
+        sinopsis = movie_data.get("overview", "Sinopsis no disponible.")
+        if len(sinopsis) > 250:
+            sinopsis = sinopsis[:250] + "..."
+            
         caption_text = (
-            f"🎬 ¡Nueva película disponible!\n\n"
-            f"🍿 **{movie_data.get('title')}**\n"
-            f"📝 {movie_data.get('overview', 'Sinopsis no disponible.')[:100]}...\n" # Mini sinopsis
-            f"Presiona los botones de abajo para acceder."
+            f"🎬 **¡Nueva película disponible!**\n\n"
+            f"🍿 **{movie_data.get('title')}**\n\n"
+            f"📝 {sinopsis}\n\n"
+            f"Presiona el botón 'Ver Película' para acceder al post original."
         )
 
         keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
@@ -484,8 +490,8 @@ async def send_movie_post(chat_id, movie_data, movie_link, post_keyboard, user_i
                 f"Haz clic en el botón de abajo para verla."
             )
             keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-                [types.InlineKeyboardButton(text="🎬 Ver ahora", url=f"https://t.me/c/{str(TELEGRAM_MAIN_CHANNEL_ID).replace('-100', '')}/{message.message_id}")],
-                [types.InlineKeyboardButton(text="➡️ Ir al canal", url=MAIN_CHANNEL_INVITE_LINK)],
+                [types.InlineKeyboardButton(text="🎬 Ver ahora", url=f"https://t.me/{MAIN_CHANNEL_USERNAME}/{message.message_id}")],
+                [types.InlineKeyboardButton(text="➡️ Ir al Canal", url=MAIN_CHANNEL_INVITE_LINK)],
                 [types.InlineKeyboardButton(text="✨ Pedir otra película", url="https://t.me/sdmin_dy_bot?start=request")]
             ])
             await bot.send_message(user_id_to_notify, notification_message, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
@@ -494,7 +500,6 @@ async def send_movie_post(chat_id, movie_data, movie_link, post_keyboard, user_i
     except Exception as e:
         logging.error(f"Error al enviar la publicación: {e}")
         return False, None
-
 
 @dp.message(F.text == "🆘 Soporte")
 async def start_support_handler(message: types.Message, state: FSMContext):
@@ -815,7 +820,6 @@ async def handle_delete_movie(callback_query: types.CallbackQuery):
         await bot.send_message(callback_query.message.chat.id, f"✅ La película **{movie_to_delete.get('title')}** ha sido eliminada del catálogo y del canal.", parse_mode=ParseMode.MARKDOWN)
     else:
         await bot.send_message(callback_query.message.chat.id, "No se encontró la película para eliminar.")
-
 
 @dp.callback_query(F.data.startswith("publish_from_catalog:"))
 async def publish_from_catalog(callback_query: types.CallbackQuery):
@@ -1343,7 +1347,7 @@ async def handle_movie_request_by_id(callback_query: types.CallbackQuery):
                 f"Tu película fue publicada en el canal principal. Haz clic aquí para verla"
             )
             keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-                [types.InlineKeyboardButton(text="📢 Ver en el canal", url=f"https://t.me/c/{str(TELEGRAM_MAIN_CHANNEL_ID).replace('-100', '')}/{message_id}")]
+                [types.InlineKeyboardButton(text="📢 Ver en el canal", url=f"https://t.me/{MAIN_CHANNEL_USERNAME}/{message_id}")]
             ])
             await bot.send_message(callback_query.from_user.id, notification_message, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
     
@@ -1420,7 +1424,7 @@ async def handle_movie_request_callback(callback_query: types.CallbackQuery):
                 f"Tu película fue publicada en el canal principal. Haz clic aquí para verla"
             )
             keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-                [types.InlineKeyboardButton(text="📢 Ver en el canal", url=f"https://t.me/c/{str(TELEGRAM_MAIN_CHANNEL_ID).replace('-100', '')}/{message_id}")]
+                [types.InlineKeyboardButton(text="📢 Ver en el canal", url=f"https://t.me/{MAIN_CHANNEL_USERNAME}/{message_id}")]
             ])
             await bot.send_message(callback_query.from_user.id, notification_message, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
     
@@ -1536,8 +1540,8 @@ async def process_requested_movie_link(message: types.Message, state: FSMContext
                 f"Haz clic en el botón de abajo para verla."
             )
             keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-                [types.InlineKeyboardButton(text="🎬 Ver ahora", url=f"https://t.me/c/{str(TELEGRAM_MAIN_CHANNEL_ID).replace('-100', '')}/{message_id}")],
-                [types.InlineKeyboardButton(text="➡️ Ir al canal", url=MAIN_CHANNEL_INVITE_LINK)],
+                [types.InlineKeyboardButton(text="🎬 Ver ahora", url=f"https://t.me/{MAIN_CHANNEL_USERNAME}/{message_id}")],
+                [types.InlineKeyboardButton(text="➡️ Ir al Canal", url=MAIN_CHANNEL_INVITE_LINK)],
                 [types.InlineKeyboardButton(text="✨ Pedir otra película", url="https://t.me/sdmin_dy_bot?start=request")]
             ])
             await bot.send_message(requester_id, notification_message, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
@@ -1570,7 +1574,7 @@ async def publish_now_manual(callback_query: types.CallbackQuery):
     if success:
         notification_message = "✅ Tu película fue publicada en el canal principal. Haz clic aquí para verla."
         keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-            [types.InlineKeyboardButton(text="📢 Ver en el canal", url=f"https://t.me/c/{str(TELEGRAM_MAIN_CHANNEL_ID).replace('-100', '')}/{message_id}")]
+            [types.InlineKeyboardButton(text="📢 Ver en el canal", url=f"https://t.me/{MAIN_CHANNEL_USERNAME}/{message_id}")]
         ])
         await bot.send_message(callback_query.from_user.id, notification_message, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
     else:
