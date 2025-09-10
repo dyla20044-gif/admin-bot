@@ -28,31 +28,30 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 # ----------------------------------------
 
-# Canal ID
-TELEGRAM_MAIN_CHANNEL_ID = -1002240787394  # Canal con enlaces de descarga
-TELEGRAM_PUBLIC_CHANNEL_ID = -1001945286271 # Canal público de redirección
+# --- CONFIGURACIÓN DE CANALES ---
+# ID del canal principal (donde se publican las películas con enlaces)
+TELEGRAM_MAIN_CHANNEL_ID = -1002240787394  
 
-# Nuevas variables para canales adicionales
-# Puedes agregar hasta 3 canales aquí.
-# Edita solo los valores de los IDs.
-ADDITIONAL_PUBLIC_CHANNELS = [
-    os.getenv("PUBLIC_CHANNEL_ID_2"), # ID del segundo canal público
-    os.getenv("PUBLIC_CHANNEL_ID_3"), # ID del tercer canal público
-    os.getenv("PUBLIC_CHANNEL_ID_4")  # ID del cuarto canal público
-]
-# Limpiar canales vacíos y convertir a entero
-VALID_ADDITIONAL_CHANNELS = [int(cid) for cid in ADDITIONAL_PUBLIC_CHANNELS if cid]
-ALL_PUBLIC_CHANNELS = [TELEGRAM_PUBLIC_CHANNEL_ID] + VALID_ADDITIONAL_CHANNELS
+# IDs de los canales públicos (donde se publican noticias, memes y posts de redirección)
+# El primer ID es tu canal de audiencia.
+# Puedes agregar hasta 3 IDs adicionales. Si no vas a usar un canal, déjalo en 0.
+TELEGRAM_PUBLIC_CHANNEL_ID = -1001945286271 
+PUBLIC_CHANNEL_ID_2 = 0 
+PUBLIC_CHANNEL_ID_3 = 0
+PUBLIC_CHANNEL_ID_4 = 0
 
+# Lista de todos los canales públicos para el bot
+ALL_PUBLIC_CHANNELS = [cid for cid in [TELEGRAM_PUBLIC_CHANNEL_ID, PUBLIC_CHANNEL_ID_2, PUBLIC_CHANNEL_ID_3, PUBLIC_CHANNEL_ID_4] if cid != 0]
 
+# Enlace de invitación del canal principal (para los botones de redirección)
+MAIN_CHANNEL_INVITE_LINK = "https://t.me/click_para_ver"
+MAIN_CHANNEL_USERNAME = "click_para_ver"
+
+# --- CONFIGURACIÓN DE APIS Y ALMACENAMIENTO ---
 BASE_TMDB_URL = "https://api.themoviedb.org/3"
 POSTER_BASE_URL = "https://image.tmdb.org/t/p/w500"
 TRAKT_BASE_URL = "https://api.trakt.tv"
 WELCOME_IMAGE_URL = "https://i.imgur.com/DJSUzQh.jpeg"
-
-# Enlace de invitación del canal principal
-MAIN_CHANNEL_INVITE_LINK = "https://t.me/click_para_ver"
-MAIN_CHANNEL_USERNAME = "click_para_ver"
 
 # Storage for scheduled posts and recent posts
 scheduled_posts = asyncio.Queue()
@@ -1200,9 +1199,9 @@ async def show_movies_by_genre(callback_query: types.CallbackQuery, page=1):
 
     keyboard_buttons = []
     if page > 1:
-        keyboard_buttons.append(types.InlineKeyboardButton(text="⬅️ Anterior", callback_data=f"genre_page:{genre_id}:{page-1}"))
+        pagination_buttons.append(types.InlineKeyboardButton(text="⬅️ Anterior", callback_data=f"genre_page:{genre_id}:{page-1}"))
     if page + 1 < total_pages:
-        keyboard_buttons.append(types.InlineKeyboardButton(text="Siguiente ➡️", callback_data=f"genre_page:{genre_id}:{page+1}"))
+        pagination_buttons.append(types.InlineKeyboardButton(text="Siguiente ➡️", callback_data=f"genre_page:{genre_id}:{page+1}"))
     
     keyboard_buttons.append(types.InlineKeyboardButton(text="⬅️ Regresar", callback_data="back_to_search_menu"))
 
@@ -1324,83 +1323,6 @@ async def handle_movie_request_by_id(callback_query: types.CallbackQuery):
     
     tmdb_id = int(callback_query.data.split(':')[1])
     requester_id = callback_query.from_user.id
-    
-    tmdb_data = await get_movie_details(tmdb_id)
-    if not tmdb_data:
-        await bot.send_message(callback_query.message.chat.id, "No se pudo obtener la información de la película. Por favor, inténtalo de nuevo.")
-        return
-
-    movie_in_db = await get_movie_by_tmdb_id(tmdb_id)
-    
-    today = datetime.date.today().isoformat()
-    if tmdb_id not in daily_requests:
-        daily_requests[tmdb_id] = {"count": 0, "date": today}
-    if daily_requests[tmdb_id]["date"] != today:
-        daily_requests[tmdb_id]["count"] = 0
-        daily_requests[tmdb_id]["date"] = today
-        
-    if movie_in_db and daily_requests[tmdb_id]["count"] >= REQUEST_LIMIT:
-        await bot.send_message(callback_query.message.chat.id, f"🚫 Esta película ha superado el límite de solicitudes diarias. Aquí tienes el enlace para verla:")
-        keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-            [types.InlineKeyboardButton(text="🎬 Ver ahora", url=movie_in_db.get("link"))]
-        ])
-        await bot.send_message(callback_query.message.chat.id, f"**{movie_in_db.get('title')}**", reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
-    
-    elif movie_in_db:
-        await bot.send_message(callback_query.message.chat.id, f"La película **{movie_in_db.get('title')}** ya existe en el catálogo. Publicándola en el canal...")
-        daily_requests[tmdb_id]["count"] += 1
-        
-        text, poster_url, post_keyboard = create_movie_message(tmdb_data, movie_in_db.get("link"))
-        success, message_id = await send_movie_post(TELEGRAM_MAIN_CHANNEL_ID, tmdb_data, movie_in_db.get("link"), post_keyboard)
-        
-        if success:
-            notification_message = (
-                f"Tu película fue publicada en el canal principal. Haz clic aquí para verla"
-            )
-            keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-                [types.InlineKeyboardButton(text="📢 Ver en el canal", url=f"https://t.me/{MAIN_CHANNEL_USERNAME}/{message_id}")]
-            ])
-            await bot.send_message(callback_query.from_user.id, notification_message, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
-    
-    else:
-        poster_url = get_movie_poster_url(tmdb_data.get("poster_path"))
-        caption_text = (
-            f"✨ **Nueva solicitud de película**\n\n"
-            f"El usuario **{callback_query.from_user.full_name}** (@{callback_query.from_user.username})\n"
-            f"ha solicitado: **{tmdb_data.get('title')}**\n"
-            f"ID de la película: `{tmdb_id}`\n\n"
-        )
-        
-        keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-            [types.InlineKeyboardButton(text="📌 Publicar ahora esta película", callback_data=f"publish_now_from_trakt:{tmdb_id}:{requester_id}")]
-        ])
-        
-        if poster_url:
-            await bot.send_photo(
-                ADMIN_ID,
-                photo=poster_url,
-                caption=caption_text,
-                parse_mode=ParseMode.HTML,
-                reply_markup=keyboard
-            )
-        else:
-            await bot.send_message(
-                ADMIN_ID,
-                text=caption_text,
-                parse_mode=ParseMode.HTML,
-                reply_markup=keyboard
-            )
-            
-        await bot.send_message(callback_query.message.chat.id, f"✅ Tu solicitud para **{tmdb_data.get('title')}** ha sido enviada al administrador. ¡Te avisaremos cuando esté lista!")
-
-
-@dp.callback_query(F.data.startswith("request_movie:"))
-async def handle_movie_request_callback(callback_query: types.CallbackQuery):
-    await bot.answer_callback_query(callback_query.id)
-    
-    parts = callback_query.data.split(':')
-    tmdb_id = int(parts[1])
-    requester_id = int(parts[2])
     
     tmdb_data = await get_movie_details(tmdb_id)
     if not tmdb_data:
