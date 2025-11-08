@@ -954,7 +954,7 @@ async def publish_from_catalog(callback_query: types.CallbackQuery):
 # --- FIN DEL NUEVO FLUJO DE CATÁLOGO ---
 
 
-# --- MODIFICACIÓN 2: Opciones de auto-publicación actualizadas ---
+# --- Opciones de auto-publicación actualizadas ---
 @dp.message(F.text == "⚙️ Configuración auto-publicación")
 async def auto_post_config(message: types.Message, state: FSMContext):
     await state.clear()
@@ -980,7 +980,7 @@ async def set_auto_post_count(callback_query: types.CallbackQuery):
         text=f"✅ Publicación automática configurada para {AUTO_POST_COUNT} películas al día."
     )
 
-# NUEVO: Manejador para la configuración de noticias
+# --- (ESTA ES LA FUNCIÓN MODIFICADA) ---
 @dp.message(F.text == "📰 Configurar noticias")
 async def news_post_config(message: types.Message, state: FSMContext):
     if str(message.from_user.id) != ADMIN_ID:
@@ -988,9 +988,9 @@ async def news_post_config(message: types.Message, state: FSMContext):
         return
     await state.clear()
     keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-        [types.InlineKeyboardButton(text="2 noticias/memes al día", callback_data="set_news_2")],
-        [types.InlineKeyboardButton(text="4 noticias/memes al día", callback_data="set_news_4")],
-        [types.InlineKeyboardButton(text="6 noticias/memes al día", callback_data="set_news_6")]
+        [types.InlineKeyboardButton(text="3 noticias/memes al día (Cada 8 hrs)", callback_data="set_news_3")],
+        [types.InlineKeyboardButton(text="4 noticias/memes al día (Cada 6 hrs)", callback_data="set_news_4")],
+        [types.InlineKeyboardButton(text="6 noticias/memes al día (Cada 4 hrs)", callback_data="set_news_6")]
     ])
     await message.reply("Elige cuántas noticias y memes quieres que se publiquen automáticamente cada día:", reply_markup=keyboard)
 
@@ -1489,7 +1489,7 @@ async def handle_movie_request_by_id(callback_query: types.CallbackQuery):
                 f"Tu película fue publicada en el canal principal. Haz clic aquí para verla"
             )
             keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-                [types.InlineKeyboardButton(text="📢 Ver en el canal", url=f"https.t.me/{MAIN_CHANNEL_USERNAME}/{message_id}")]
+                [types.InlineKeyboardButton(text="📢 Ver en el canal", url=f"https://t.me/{MAIN_CHANNEL_USERNAME}/{message_id}")]
             ])
             await bot.send_message(callback_query.from_user.id, notification_message, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
     
@@ -1568,7 +1568,7 @@ async def handle_movie_request_callback(callback_query: types.CallbackQuery):
                 f"Tu película fue publicada en el canal principal. Haz clic aquí para verla"
             )
             keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-                [types.InlineKeyboardButton(text="📢 Ver en el canal", url=f"https.t.me/{MAIN_CHANNEL_USERNAME}/{message_id}")]
+                [types.InlineKeyboardButton(text="📢 Ver en el canal", url=f"https://t.me/{MAIN_CHANNEL_USERNAME}/{message_id}")]
             ])
             await bot.send_message(callback_query.from_user.id, notification_message, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
     
@@ -1615,7 +1615,7 @@ async def publish_now_from_trakt_callback(callback_query: types.CallbackQuery, s
     requester_id = int(parts[2])
     tmdb_data = await get_movie_details(tmdb_id)
     if not tmdb_data:
-        await bot.send_message(callback_query.message.chat.id, "No se pudo obtener la información completa de la película desde TMDB. Por favor, reinicie el proceso manually.")
+        await bot.send_message(callback_query.message.chat.id, "No se pudo obtener la información completa de la película desde TMDB. Por favor, reinicie el proceso manualmente.")
         return
     await state.update_data(
         tmdb_id=tmdb_id,
@@ -1714,7 +1714,7 @@ async def publish_now_manual(callback_query: types.CallbackQuery):
     if success:
         notification_message = "✅ Tu película fue publicada en el canal principal. Haz clic aquí para verla."
         keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-            [types.InlineKeyboardButton(text="📢 Ver en el canal", url=f"https.t.me/{MAIN_CHANNEL_USERNAME}/{message_id}")]
+            [types.InlineKeyboardButton(text="📢 Ver en el canal", url=f"https://t.me/{MAIN_CHANNEL_USERNAME}/{message_id}")]
         ])
         await bot.send_message(callback_query.from_user.id, notification_message, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
     else:
@@ -1759,7 +1759,7 @@ async def final_schedule_callback(callback_query: types.CallbackQuery, state: FS
     )
 
 
-# --- MODIFICACIÓN 3: Tarea de auto-publicación (configurable + re-publicación) ---
+# --- Tarea de auto-publicación (configurable + re-publicación) ---
 async def auto_post_scheduler():
     while True:
         try:
@@ -1858,7 +1858,7 @@ async def check_scheduled_posts():
             logging.error(f"Error en la tarea de revisión de publicaciones programadas: {e}")
             await asyncio.sleep(60)
 
-# --- NUEVA TAREA: Limpieza automática de películas antiguas (después de 2 días) ---
+# --- TAREA: Limpieza automática de películas antiguas (después de 2 días) ---
 async def movie_cleanup_scheduler():
     DELETE_AFTER_DAYS = 2
     CHECK_INTERVAL_HOURS = 6 # Revisará cada 6 horas
@@ -1932,7 +1932,7 @@ async def movie_cleanup_scheduler():
             logging.error(f"Error grave en movie_cleanup_scheduler: {e}")
             await asyncio.sleep(3600) # Esperar 1 hora si hay un error grave
 
-# --- MODIFICACIÓN 4: Tarea de contenido (con auto-eliminación de 5 horas) ---
+# --- TAREA de contenido (con auto-eliminación de 5 horas) ---
 async def channel_content_scheduler():
     global NEWS_POST_COUNT
     DELETE_NEWS_AFTER_HOURS = 5
@@ -2038,7 +2038,7 @@ async def start_webhook_server():
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
 
-# --- MODIFICACIÓN 5: Añadir la nueva tarea de limpieza al main ---
+# --- Añadir la nueva tarea de limpieza al main ---
 async def main():
     
     # Iniciar las tareas en segundo plano
