@@ -68,8 +68,8 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TELEGRAM_BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
-AUTO_POST_COUNT = 8 # CAMBIADO: Aumentado a 8
-NEWS_POST_COUNT = 4 # NUEVO: Variable para controlar la cantidad de noticias por día
+AUTO_POST_COUNT = 8 # Valor por defecto
+NEWS_POST_COUNT = 4 # Variable para controlar la cantidad de noticias por día
 
 MOVIES_PER_PAGE = 5
 SEARCH_RESULTS_PER_PAGE = 5
@@ -491,12 +491,17 @@ async def send_movie_post(chat_id, movie_data, movie_link, post_keyboard, user_i
             )
 
         if chat_id == TELEGRAM_MAIN_CHANNEL_ID:
+            # --- MODIFICACIÓN 1: Añadir timestamp de publicación ---
             movie_data["last_message_id"] = message.message_id
+            movie_data["last_posted_at"] = datetime.datetime.now().isoformat() # <-- NUEVA LÍNEA
+            
             await asyncio.sleep(5)
             public_message_id = await forward_post_to_public_channel(message, movie_data)
+            
             if public_message_id:
                 movie_data["last_message_id_public"] = public_message_id
-            await save_movie_to_db(movie_data)
+            
+            await save_movie_to_db(movie_data) # <-- Esto ahora guarda el timestamp
 
         if user_id_to_notify:
             notification_message = (
@@ -707,6 +712,8 @@ async def admin_process_movie_link(message: types.Message, state: FSMContext):
         "names": ", ".join(names),
         "link": movie_link,
         "last_message_id": None,
+        "last_message_id_public": None, # Asegurarse que exista
+        "last_posted_at": None, # Asegurarse que exista
         "added_at": datetime.datetime.now().isoformat()
     }
     
@@ -917,14 +924,8 @@ async def handle_delete_movie(callback_query: types.CallbackQuery):
     
     movie_to_delete = await get_movie_by_tmdb_id(movie_id)
     if movie_to_delete:
-        if movie_to_delete.get('last_message_id'):
-            try:
-                await bot.delete_message(
-                    chat_id=TELEGRAM_MAIN_CHANNEL_ID,
-                    message_id=movie_to_delete['last_message_id']
-                )
-            except Exception as e:
-                logging.warning(f"No se pudo eliminar el post del canal: {e}")
+        # Usar la función de borrado de post que borra de AMBOS canales
+        await delete_old_post(movie_id)
         
         await delete_movie_from_db(movie_id)
         await bot.send_message(callback_query.message.chat.id, f"✅ La película **{movie_to_delete.get('title')}** ha sido eliminada del catálogo y del canal.", parse_mode=ParseMode.MARKDOWN)
@@ -953,6 +954,7 @@ async def publish_from_catalog(callback_query: types.CallbackQuery):
 # --- FIN DEL NUEVO FLUJO DE CATÁLOGO ---
 
 
+# --- MODIFICACIÓN 2: Opciones de auto-publicación actualizadas ---
 @dp.message(F.text == "⚙️ Configuración auto-publicación")
 async def auto_post_config(message: types.Message, state: FSMContext):
     await state.clear()
@@ -960,10 +962,10 @@ async def auto_post_config(message: types.Message, state: FSMContext):
         await message.reply("No tienes permiso para esta acción.")
         return
     keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-        [types.InlineKeyboardButton(text="2 películas al día", callback_data="set_auto_2")],
-        [types.InlineKeyboardButton(text="4 películas al día", callback_data="set_auto_4")],
-        [types.InlineKeyboardButton(text="6 películas al día", callback_data="set_auto_6")],
-        [types.InlineKeyboardButton(text="8 películas al día", callback_data="set_auto_8")]
+        [types.InlineKeyboardButton(text="8 películas al día (Cada 3 hrs)", callback_data="set_auto_8")],
+        [types.InlineKeyboardButton(text="12 películas al día (Cada 2 hrs)", callback_data="set_auto_12")],
+        [types.InlineKeyboardButton(text="16 películas al día", callback_data="set_auto_16")],
+        [types.InlineKeyboardButton(text="24 películas al día (Cada 1 hr)", callback_data="set_auto_24")]
     ])
     await message.reply("Elige cuántas películas quieres que se publiquen automáticamente cada día:", reply_markup=keyboard)
 
@@ -1487,7 +1489,7 @@ async def handle_movie_request_by_id(callback_query: types.CallbackQuery):
                 f"Tu película fue publicada en el canal principal. Haz clic aquí para verla"
             )
             keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-                [types.InlineKeyboardButton(text="📢 Ver en el canal", url=f"https://t.me/{MAIN_CHANNEL_USERNAME}/{message_id}")]
+                [types.InlineKeyboardButton(text="📢 Ver en el canal", url=f"https.t.me/{MAIN_CHANNEL_USERNAME}/{message_id}")]
             ])
             await bot.send_message(callback_query.from_user.id, notification_message, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
     
@@ -1566,7 +1568,7 @@ async def handle_movie_request_callback(callback_query: types.CallbackQuery):
                 f"Tu película fue publicada en el canal principal. Haz clic aquí para verla"
             )
             keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-                [types.InlineKeyboardButton(text="📢 Ver en el canal", url=f"https://t.me/{MAIN_CHANNEL_USERNAME}/{message_id}")]
+                [types.InlineKeyboardButton(text="📢 Ver en el canal", url=f"https.t.me/{MAIN_CHANNEL_USERNAME}/{message_id}")]
             ])
             await bot.send_message(callback_query.from_user.id, notification_message, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
     
@@ -1613,7 +1615,7 @@ async def publish_now_from_trakt_callback(callback_query: types.CallbackQuery, s
     requester_id = int(parts[2])
     tmdb_data = await get_movie_details(tmdb_id)
     if not tmdb_data:
-        await bot.send_message(callback_query.message.chat.id, "No se pudo obtener la información completa de la película desde TMDB. Por favor, reinicie el proceso manualmente.")
+        await bot.send_message(callback_query.message.chat.id, "No se pudo obtener la información completa de la película desde TMDB. Por favor, reinicie el proceso manually.")
         return
     await state.update_data(
         tmdb_id=tmdb_id,
@@ -1667,28 +1669,24 @@ async def process_requested_movie_link(message: types.Message, state: FSMContext
         "names": ", ".join(names),
         "id": tmdb_id,
         "link": movie_link,
-        "last_message_id": None  
+        "last_message_id": None,
+        "last_message_id_public": None,
+        "last_posted_at": None,
+        "added_at": datetime.datetime.now().isoformat()
     }
     await save_movie_to_db(new_movie)
     await delete_old_post(tmdb_id)
     text, poster_url, post_keyboard = create_movie_message(tmdb_data, movie_link)
-    success, message_id = await send_movie_post(TELEGRAM_MAIN_CHANNEL_ID, tmdb_data, movie_link, post_keyboard)
+    success, message_id = await send_movie_post(TELEGRAM_MAIN_CHANNEL_ID, tmdb_data, movie_link, post_keyboard, user_id_to_notify=requester_id)
+    
     await state.clear()
+    
     if success:
         await message.reply("✅ Película agregada a la base de datos y publicada con éxito.")
-        if requester_id:
-            notification_message = (
-                f"🎉 ¡Tu película solicitada, **{tmdb_data.get('title')}**, ya está disponible en el canal!\n\n"
-                f"Haz clic en el botón de abajo para verla."
-            )
-            keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-                [types.InlineKeyboardButton(text="🎬 Ver ahora", url=f"https://t.me/{MAIN_CHANNEL_USERNAME}/{message_id}")],
-                [types.InlineKeyboardButton(text="➡️ Ir al Canal", url=MAIN_CHANNEL_INVITE_LINK)],
-                [types.InlineKeyboardButton(text="✨ Pedir otra película", url="https://t.me/sdmin_dy_bot?start=request")]
-            ])
-            await bot.send_message(requester_id, notification_message, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
+        # La notificación al usuario ya se maneja dentro de send_movie_post
     else:
         await message.reply("✅ Película agregada a la base de datos, pero ocurrió un error al publicarla en el canal.")
+    
     if original_request_id:
         try:
             await bot.delete_message(chat_id=message.chat.id, message_id=original_request_id)
@@ -1716,7 +1714,7 @@ async def publish_now_manual(callback_query: types.CallbackQuery):
     if success:
         notification_message = "✅ Tu película fue publicada en el canal principal. Haz clic aquí para verla."
         keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-            [types.InlineKeyboardButton(text="📢 Ver en el canal", url=f"https://t.me/{MAIN_CHANNEL_USERNAME}/{message_id}")]
+            [types.InlineKeyboardButton(text="📢 Ver en el canal", url=f"https.t.me/{MAIN_CHANNEL_USERNAME}/{message_id}")]
         ])
         await bot.send_message(callback_query.from_user.id, notification_message, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
     else:
@@ -1761,34 +1759,78 @@ async def final_schedule_callback(callback_query: types.CallbackQuery, state: FS
     )
 
 
-# --- Automated tasks
+# --- MODIFICACIÓN 3: Tarea de auto-publicación (configurable + re-publicación) ---
 async def auto_post_scheduler():
     while True:
         try:
-            total_posts_per_day = AUTO_POST_COUNT
-            interval_seconds = 24 * 60 * 60 / total_posts_per_day if total_posts_per_day > 0 else 3600 
-            unposted_movies = [v for v in await get_all_movies() if str(v.get("last_message_id")) == 'None' or v.get("last_message_id") == '']
+            # 1. Vuelve a usar la variable global que configuras con los botones
+            total_posts_per_day = AUTO_POST_COUNT 
+            
+            if total_posts_per_day <= 0:
+                logging.warning("AUTO_POST_COUNT es 0 o menos, el auto-posting está desactivado. Revisando en 1 hora.")
+                await asyncio.sleep(3600)
+                continue
+
+            # 2. Calcula el intervalo basado en tu configuración
+            interval_seconds = (24 * 60 * 60) / total_posts_per_day
+            logging.info(f"Auto-post: {total_posts_per_day} películas/día. Próxima publicación en {interval_seconds/3600:.2f} horas.")
+
+            # 3. Lógica para seleccionar película (prioriza nuevas, luego re-publica)
+            unposted_movies = [
+                v for v in await get_all_movies() 
+                if str(v.get("last_message_id")) == 'None' or v.get("last_message_id") == ''
+            ]
+            
+            movie_info = None
             if unposted_movies:
+                # Si hay películas "vírgenes", elige una al azar
                 movie_info = random.choice(unposted_movies)
+                logging.info(f"Auto-publicación: Seleccionando película NUEVA: {movie_info.get('title')}")
+            else:
+                # Si NO hay películas vírgenes, usa el catálogo COMPLETO
+                all_movies = await get_all_movies()
+                if all_movies:
+                    movie_info = random.choice(all_movies)
+                    logging.info(f"Auto-publicación: RE-PUBLICANDO película existente: {movie_info.get('title')}")
+                else:
+                    logging.warning("Auto-publicación: No hay películas en la base de datos para publicar.")
+            
+            # 4. Lógica de publicación (si se encontró una película)
+            if movie_info:
                 movie_id = movie_info.get("id")
                 tmdb_data = await get_movie_details(movie_id)
+                
                 if tmdb_data:
-                    logging.info("Hora de una nueva publicación automática.")
-                    
+                    # 5. Borra el post anterior (si existe) ANTES de publicar el nuevo
                     await delete_old_post(movie_id)
 
-                    text, poster_url, post_keyboard = create_movie_message(tmdb_data, movie_info.get("link"))
-                    success, _ = await send_movie_post(TELEGRAM_MAIN_CHANNEL_ID, tmdb_data, movie_info.get("link"), post_keyboard)
+                    # Crear el teclado para el post
+                    post_keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+                        [types.InlineKeyboardButton(text="🎬 Ver ahora", url=movie_info.get("link"))],
+                        [types.InlineKeyboardButton(text="✨ Pedir otra película", url="https://t.me/sdmin_dy_bot?start=request")]
+                    ])
+                    
+                    # Enviar el post (la función send_movie_post ya actualiza el last_message_id y last_posted_at)
+                    success, _ = await send_movie_post(
+                        TELEGRAM_MAIN_CHANNEL_ID, 
+                        tmdb_data, 
+                        movie_info.get("link"), 
+                        post_keyboard
+                    )
+                    
                     if success:
                         logging.info(f"Publicación automática de '{tmdb_data.get('title')}' enviada con éxito.")
                     else:
                         logging.error("Error al enviar la publicación automática.")
                 else:
-                    logging.error("Error: No se pudo obtener la información de la película para la publicación automática.")
+                    logging.error(f"Error: No se pudo obtener TMDB data para {movie_id} en auto-publicación.")
+            
+            # 6. Espera el intervalo calculado
             await asyncio.sleep(interval_seconds)
+
         except Exception as e:
-            logging.error(f"Error en el programador de publicaciones automáticas: {e}")
-            await asyncio.sleep(60)
+            logging.error(f"Error grave en el programador de publicaciones automáticas: {e}")
+            await asyncio.sleep(60) # Espera 60 segundos si ocurre un error grave
 
 async def check_scheduled_posts():
     while True:
@@ -1816,26 +1858,113 @@ async def check_scheduled_posts():
             logging.error(f"Error en la tarea de revisión de publicaciones programadas: {e}")
             await asyncio.sleep(60)
 
+# --- NUEVA TAREA: Limpieza automática de películas antiguas (después de 2 días) ---
+async def movie_cleanup_scheduler():
+    DELETE_AFTER_DAYS = 2
+    CHECK_INTERVAL_HOURS = 6 # Revisará cada 6 horas
+    collection = get_mongo_db_collection()
+    
+    if collection is None:
+        logging.error("Limpieza de películas: No se pudo conectar a la DB. La tarea no se iniciará.")
+        return
+
+    while True:
+        try:
+            logging.info(f"Ejecutando tarea de limpieza. Borrando películas con más de {DELETE_AFTER_DAYS} días.")
+            all_movies = await get_all_movies()
+            now = datetime.datetime.now(datetime.timezone.utc)
+            
+            movies_to_reset = []
+
+            for movie in all_movies:
+                posted_at_str = movie.get("last_posted_at")
+                
+                # Si tiene un ID de mensaje pero no un timestamp, es de una versión antigua del bot.
+                # Lo marcaremos para borrado si tiene ID de mensaje.
+                if not posted_at_str and movie.get("last_message_id"):
+                    logging.warning(f"Película '{movie.get('title')}' tiene post antiguo sin timestamp. Marcando para borrado.")
+                    movies_to_reset.append(movie)
+                    continue
+
+                if not posted_at_str:
+                    continue # Nunca ha sido posteada, ignorar
+
+                try:
+                    # Convertir a datetime con timezone-aware (ISO format guarda info de timezone)
+                    posted_at_dt = datetime.datetime.fromisoformat(posted_at_str)
+                    
+                    # Asegurarse que ambos son aware o naive. ISO 8601 de python es "aware".
+                    # Si 'now' no lo es, ajústalo. (Asegurémonos que 'now' sea aware)
+                    if posted_at_dt.tzinfo is None:
+                       posted_at_dt = posted_at_dt.replace(tzinfo=datetime.timezone.utc)
+                    
+                    time_diff = now - posted_at_dt
+                    
+                    if time_diff.days >= DELETE_AFTER_DAYS:
+                        logging.info(f"Película '{movie.get('title')}' tiene {time_diff.days} días. Eliminando post...")
+                        movies_to_reset.append(movie)
+
+                except Exception as e:
+                    logging.error(f"Error procesando fecha de película {movie.get('id')} para limpieza: {e}")
+            
+            # Procesar todos los borrados
+            for movie in movies_to_reset:
+                movie_id = movie.get("id")
+                
+                # 1. Borrar los posts de los canales
+                await delete_old_post(movie_id) 
+                
+                # 2. Resetear los campos en la DB para que pueda ser re-publicada
+                await collection.update_one(
+                    {"id": movie_id},
+                    {"$set": {
+                        "last_message_id": None,
+                        "last_message_id_public": None,
+                        "last_posted_at": None
+                    }}
+                )
+                logging.info(f"Post de '{movie.get('title')}' eliminado y DB reseteada para futura re-publicación.")
+            
+            logging.info(f"Limpieza de películas completada. {len(movies_to_reset)} posts eliminados. Durmiendo por {CHECK_INTERVAL_HOURS} horas.")
+            await asyncio.sleep(CHECK_INTERVAL_HOURS * 3600)
+        
+        except Exception as e:
+            logging.error(f"Error grave en movie_cleanup_scheduler: {e}")
+            await asyncio.sleep(3600) # Esperar 1 hora si hay un error grave
+
+# --- MODIFICACIÓN 4: Tarea de contenido (con auto-eliminación de 5 horas) ---
 async def channel_content_scheduler():
     global NEWS_POST_COUNT
+    DELETE_NEWS_AFTER_HOURS = 5
+    
+    async def delete_message_later(chat_id, message_id, delay_seconds):
+        """Tarea anidada para borrar un mensaje después de un tiempo"""
+        await asyncio.sleep(delay_seconds)
+        try:
+            await bot.delete_message(chat_id=chat_id, message_id=message_id)
+            logging.info(f"Contenido (noticia/meme) {message_id} eliminado de {chat_id} tras {DELETE_NEWS_AFTER_HOURS} horas.")
+        except Exception as e:
+            logging.warning(f"No se pudo eliminar el mensaje {message_id} de {chat_id}: {e}")
+
     while True:
         try:
             # Calcula los intervalos de publicación de noticias/memes en base al NEWS_POST_COUNT
             interval_seconds = (24 * 3600) / NEWS_POST_COUNT if NEWS_POST_COUNT > 0 else 4 * 3600
             
             content_type = random.choice(["meme", "news"])
+            message_to_delete = None # Para guardar el mensaje que se publicará
             
             if content_type == "meme":
                 meme_url, meme_caption = await get_random_meme()
                 if meme_url:
                     try:
-                        await bot.send_photo(TELEGRAM_PUBLIC_CHANNEL_ID, photo=meme_url, caption=meme_caption)
+                        message_to_delete = await bot.send_photo(TELEGRAM_PUBLIC_CHANNEL_ID, photo=meme_url, caption=meme_caption)
                         logging.info("Meme publicado con éxito en el canal público.")
                     except Exception as e:
                         logging.error(f"Error al publicar un meme en el canal público: {e}")
                 else:
                     logging.warning("No se encontraron memes. Intentando publicar una noticia en su lugar.")
-                    content_type = "news"
+                    content_type = "news" # Forzar que sea noticia si el meme falla
 
             if content_type == "news":
                 articles = await get_latest_news()
@@ -1849,14 +1978,22 @@ async def channel_content_scheduler():
                     poster_url = article.get("urlToImage")
                     try:
                         if poster_url:
-                            await bot.send_photo(TELEGRAM_PUBLIC_CHANNEL_ID, photo=poster_url, caption=text, parse_mode=ParseMode.HTML)
+                            message_to_delete = await bot.send_photo(TELEGRAM_PUBLIC_CHANNEL_ID, photo=poster_url, caption=text, parse_mode=ParseMode.HTML)
                         else:
-                            await bot.send_message(TELEGRAM_PUBLIC_CHANNEL_ID, text, parse_mode=ParseMode.HTML)
+                            message_to_delete = await bot.send_message(TELEGRAM_PUBLIC_CHANNEL_ID, text, parse_mode=ParseMode.HTML)
                         logging.info("Noticia de cine publicada con éxito en el canal público.")
                     except Exception as e:
                         logging.error(f"Error al publicar una noticia en el canal público: {e}")
                 else:
                     logging.warning("No se encontraron noticias para publicar.")
+
+            # Si se publicó un meme o noticia, programar su borrado
+            if message_to_delete:
+                asyncio.create_task(delete_message_later(
+                    chat_id=TELEGRAM_PUBLIC_CHANNEL_ID,
+                    message_id=message_to_delete.message_id,
+                    delay_seconds=DELETE_NEWS_AFTER_HOURS * 3600
+                ))
 
             await asyncio.sleep(interval_seconds)
         except Exception as e:
@@ -1901,17 +2038,25 @@ async def start_webhook_server():
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
 
-# MAIN EXECUTION
+# --- MODIFICACIÓN 5: Añadir la nueva tarea de limpieza al main ---
 async def main():
     
+    # Iniciar las tareas en segundo plano
     auto_post_task = asyncio.create_task(auto_post_scheduler())
     scheduled_posts_task = asyncio.create_task(check_scheduled_posts())
     channel_content_task = asyncio.create_task(channel_content_scheduler())
+    movie_cleanup_task = asyncio.create_task(movie_cleanup_scheduler()) # <-- NUEVA TAREA
     
     webhook_task = asyncio.create_task(start_webhook_server())
 
     try:
-        await asyncio.gather(auto_post_task, scheduled_posts_task, channel_content_task, webhook_task)
+        await asyncio.gather(
+            auto_post_task, 
+            scheduled_posts_task, 
+            channel_content_task, 
+            movie_cleanup_task, # <-- NUEVA TAREA
+            webhook_task
+        )
     except asyncio.CancelledError:
         logging.info("Las tareas automáticas han sido canceladas.")
     except Exception as e:
